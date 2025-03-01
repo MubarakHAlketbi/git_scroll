@@ -205,6 +205,13 @@ impl eframe::App for GitScrollApp {
                 let clicked = ctx.input(|i| i.pointer.primary_clicked());
                 self.visualizer.handle_interaction(ui, pointer_pos, clicked);
                 
+                // Update animation state with current time
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                self.visualizer.update_animation(now);
+                
                 // Render visualization
                 self.visualizer.render(ui);
             }

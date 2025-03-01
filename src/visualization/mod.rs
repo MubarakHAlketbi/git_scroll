@@ -13,8 +13,20 @@ pub struct VisualSquare {
     /// Whether this square is currently selected
     pub selected: bool,
     
+    /// Whether this square is currently hovered
+    pub hovered: bool,
+    
     /// Current zoom level for this square
     pub zoom_level: ZoomLevel,
+    
+    /// Size weight for proportional sizing (based on file/directory size)
+    pub size_weight: f32,
+    
+    /// Animation progress for transitions (0.0 to 1.0)
+    pub animation_progress: f32,
+    
+    /// Previous rectangle (for animation)
+    pub prev_rect: Option<egui::Rect>,
 }
 
 /// Represents different zoom levels for visualization
@@ -50,6 +62,21 @@ pub struct Visualizer {
     /// Current global zoom level
     zoom_level: ZoomLevel,
     
+    /// Target zoom level during transitions
+    target_zoom_level: ZoomLevel,
+    
+    /// Animation in progress flag
+    animating: bool,
+    
+    /// Animation start time
+    animation_start_time: f64,
+    
+    /// Animation duration in seconds
+    animation_duration: f64,
+    
+    /// Directory statistics for size-based visualization
+    directory_stats: Option<DirectoryStatistics>,
+    
     /// Cache of colors for different file types
     file_type_colors: HashMap<String, egui::Color32>,
 }
@@ -66,16 +93,26 @@ impl Visualizer {
             selected_index: None,
             hovered_index: None,
             zoom_level: ZoomLevel::MaxOut,
+            target_zoom_level: ZoomLevel::MaxOut,
+            animating: false,
+            animation_start_time: 0.0,
+            animation_duration: 0.3, // 300ms animation duration
+            directory_stats: None,
             file_type_colors: Self::initialize_file_colors(),
         }
     }
     
     /// Sets the root directory entry to visualize
-    /// 
+    ///
     /// # Arguments
     /// * `entry` - The root directory entry
     pub fn set_root_entry(&mut self, entry: DirectoryEntry) {
-        self.root_entry = Some(entry);
+        self.root_entry = Some(entry.clone());
+        
+        // Calculate directory statistics for size-based visualization
+        let parser = crate::directory::DirectoryParser::new();
+        self.directory_stats = Some(parser.get_statistics(&entry));
+        
         self.generate_squares();
     }
     
@@ -164,7 +201,11 @@ impl Visualizer {
                 entry: dir_entry,
                 rect,
                 selected: false,
+                hovered: false,
                 zoom_level: self.zoom_level,
+                size_weight: 1.0 / dir_count as f32, // Equal weight for grid layout
+                animation_progress: 0.0,
+                prev_rect: None,
             });
         }
     }
@@ -188,78 +229,160 @@ impl Visualizer {
             return;
         }
         
-        // Calculate total size (use child count as a proxy for size if needed)
-        let total_size: usize = children.len();
+        // Calculate total size based on actual file/directory sizes if available
+        let mut total_size: u64 = 0;
+        let mut child_sizes: HashMap<String, u64> = HashMap::new();
         
-        // Sort children by size (directories first, then files)
+        // First pass: calculate sizes
+        for child in children {
+            let child_size = if let Some(stats) = &self.directory_stats {
+                if child.is_directory {
+                    // For directories, use the total size of all contained files
+                    // Get metadata for this directory
+                    if let Ok(metadata) = std::fs::metadata(&child.path) {
+                        // Use directory size or fallback to child count * 1000 as a proxy
+                        if metadata.len() > 0 {
+                            metadata.len()
+                        } else {
+                            (child.children.len() as u64) * 1000
+                        }
+                    } else {
+                        (child.children.len() as u64) * 1000
+                    }
+                } else {
+                    // For files, use the actual file size
+                    if let Ok(metadata) = std::fs::metadata(&child.path) {
+                        metadata.len()
+                    } else {
+                        1000 // Default size if metadata can't be read
+                    }
+                }
+            } else {
+                // Fallback if no stats available
+                if child.is_directory {
+                    (child.children.len() as u64) * 1000
+                } else {
+                    1000
+                }
+            };
+            
+            // Store the size for this child
+            child_sizes.insert(child.path.to_string_lossy().to_string(), child_size);
+            total_size += child_size;
+        }
+        
+        // Ensure total_size is not zero to avoid division by zero
+        if total_size == 0 {
+            total_size = 1;
+        }
+        
+        // Sort children by size (larger items first)
         let mut sorted_children: Vec<&DirectoryEntry> = children.iter().collect();
         sorted_children.sort_by(|a, b| {
-            // Directories come before files
-            if a.is_directory && !b.is_directory {
-                std::cmp::Ordering::Less
-            } else if !a.is_directory && b.is_directory {
-                std::cmp::Ordering::Greater
-            } else {
-                // Within same type, sort by number of children (for directories) or alphabetically (for files)
-                if a.is_directory {
-                    b.children.len().cmp(&a.children.len())
-                } else {
-                    a.name.cmp(&b.name)
-                }
-            }
+            let a_size = child_sizes.get(&a.path.to_string_lossy().to_string()).unwrap_or(&0);
+            let b_size = child_sizes.get(&b.path.to_string_lossy().to_string()).unwrap_or(&0);
+            b_size.cmp(a_size)
         });
         
-        // Use a simple algorithm to divide the space
-        let mut x = 0.0;
-        let mut y = 0.0;
-        let mut row_height: f32 = 0.0;
-        let mut remaining_width = width;
+        // Use a squarified treemap algorithm for better aspect ratios
+        self.generate_squarified_treemap(
+            sorted_children,
+            child_sizes,
+            total_size,
+            egui::Rect::from_min_size(
+                egui::pos2(0.0, 0.0),
+                egui::vec2(width, height)
+            )
+        );
+    }
+    
+    /// Generates a squarified treemap layout for better aspect ratios
+    ///
+    /// # Arguments
+    /// * `children` - Sorted children (largest first)
+    /// * `child_sizes` - Map of child path to size
+    /// * `total_size` - Total size of all children
+    /// * `rect` - Available rectangle
+    fn generate_squarified_treemap(
+        &mut self,
+        children: Vec<&DirectoryEntry>,
+        child_sizes: HashMap<String, u64>,
+        total_size: u64,
+        rect: egui::Rect
+    ) {
+        if children.is_empty() {
+            return;
+        }
         
-        for child in sorted_children {
-            // Calculate size proportion
-            let size_proportion = 1.0 / total_size as f32;
-            let item_area = width * height * size_proportion;
+        let padding = 5.0;
+        let available_rect = egui::Rect::from_min_size(
+            rect.min + egui::vec2(padding, padding),
+            rect.size() - egui::vec2(padding * 2.0, padding * 2.0)
+        );
+        
+        // Determine if we're laying out horizontally or vertically
+        let is_horizontal = available_rect.width() >= available_rect.height();
+        
+        let mut current_pos = available_rect.min;
+        let mut remaining_rect = available_rect;
+        
+        for child in children {
+            // Get the size for this child
+            let child_size = child_sizes.get(&child.path.to_string_lossy().to_string()).unwrap_or(&0);
             
-            // Calculate dimensions
-            let item_width = if remaining_width > 0.0 {
-                (item_area / height).min(remaining_width)
+            // Calculate the proportion of the total size
+            let size_proportion = *child_size as f32 / total_size as f32;
+            
+            // Calculate the area for this item
+            let item_area = available_rect.width() * available_rect.height() * size_proportion;
+            
+            // Calculate dimensions based on orientation
+            let (item_width, item_height) = if is_horizontal {
+                let item_width = item_area / remaining_rect.height();
+                (item_width, remaining_rect.height())
             } else {
-                item_area / height
+                let item_height = item_area / remaining_rect.width();
+                (remaining_rect.width(), item_height)
             };
-            let item_height = item_area / item_width;
-            
-            // Check if we need to start a new row
-            if x + item_width > width && x > 0.0 {
-                x = 0.0;
-                y += row_height;
-                row_height = 0.0;
-                remaining_width = width;
-            }
-            
-            // Update row height
-            row_height = row_height.max(item_height);
             
             // Create the rectangle
-            let padding = 5.0;
-            let rect = egui::Rect::from_min_size(
-                egui::pos2(x + padding, y + padding),
-                egui::vec2(item_width - 2.0 * padding, item_height - 2.0 * padding),
+            let item_rect = egui::Rect::from_min_size(
+                current_pos,
+                egui::vec2(item_width, item_height)
             );
             
             // Clone the directory entry to get an owned copy
             let child_entry = (*child).clone();
             
+            // Calculate size weight for potential future use
+            let size_weight = size_proportion;
+            
             // Add the square
             self.squares.push(VisualSquare {
                 entry: child_entry,
-                rect,
+                rect: item_rect,
                 selected: false,
+                hovered: false,
                 zoom_level: self.zoom_level,
+                size_weight,
+                animation_progress: 0.0,
+                prev_rect: None,
             });
             
-            // Update position for next item
-            x += item_width;
-            remaining_width -= item_width;
+            // Update position and remaining rectangle for next item
+            if is_horizontal {
+                current_pos.x += item_width;
+                remaining_rect = egui::Rect::from_min_size(
+                    egui::pos2(current_pos.x, remaining_rect.min.y),
+                    egui::vec2(remaining_rect.width() - item_width, remaining_rect.height())
+                );
+            } else {
+                current_pos.y += item_height;
+                remaining_rect = egui::Rect::from_min_size(
+                    egui::pos2(remaining_rect.min.x, current_pos.y),
+                    egui::vec2(remaining_rect.width(), remaining_rect.height() - item_height)
+                );
+            }
         }
     }
     
@@ -324,7 +447,11 @@ impl Visualizer {
                     entry: dir_entry,
                     rect,
                     selected: false,
+                    hovered: false,
                     zoom_level: self.zoom_level,
+                    size_weight: 1.0 / directories.len() as f32, // Equal weight for directories
+                    animation_progress: 0.0,
+                    prev_rect: None,
                 });
             }
         }
@@ -358,7 +485,11 @@ impl Visualizer {
                     entry: file_entry,
                     rect,
                     selected: false,
+                    hovered: false,
                     zoom_level: self.zoom_level,
+                    size_weight: 1.0 / files.len() as f32, // Equal weight for files
+                    animation_progress: 0.0,
+                    prev_rect: None,
                 });
             }
         }
@@ -438,9 +569,29 @@ impl Visualizer {
                 2 // Less rounded for files
             };
             
+            // Calculate the actual rectangle to draw based on animation
+            let draw_rect = if self.animating && square.prev_rect.is_some() {
+                // Interpolate between previous and current rectangle
+                let prev_rect = square.prev_rect.unwrap();
+                let progress = square.animation_progress;
+                
+                // Linear interpolation between rectangles
+                let min_x = prev_rect.min.x + (square.rect.min.x - prev_rect.min.x) * progress;
+                let min_y = prev_rect.min.y + (square.rect.min.y - prev_rect.min.y) * progress;
+                let max_x = prev_rect.max.x + (square.rect.max.x - prev_rect.max.x) * progress;
+                let max_y = prev_rect.max.y + (square.rect.max.y - prev_rect.max.y) * progress;
+                
+                egui::Rect::from_min_max(
+                    egui::pos2(min_x, min_y),
+                    egui::pos2(max_x, max_y)
+                )
+            } else {
+                square.rect
+            };
+            
             // Draw the square with appropriate style
             ui.painter().rect_filled(
-                square.rect,
+                draw_rect,
                 egui::CornerRadius::same(corner_radius),
                 fill_color,
             );
@@ -453,7 +604,7 @@ impl Visualizer {
             };
             
             ui.painter().rect_stroke(
-                square.rect,
+                draw_rect,
                 egui::CornerRadius::same(corner_radius),
                 egui::Stroke::new(1.0, border_color),
                 egui::epaint::StrokeKind::Middle,
@@ -467,19 +618,19 @@ impl Visualizer {
                 egui::Color32::from_rgb(20, 20, 20)
             };
             
-            // Adjust text size based on square size
-            let font_size = if square.rect.width() > 60.0 {
+            // Adjust text size based on square size (using the animated rectangle)
+            let font_size = if draw_rect.width() > 60.0 {
                 14.0
-            } else if square.rect.width() > 40.0 {
+            } else if draw_rect.width() > 40.0 {
                 12.0
             } else {
                 10.0
             };
             
             // Draw name if there's enough space
-            if square.rect.width() > 20.0 && square.rect.height() > 20.0 {
+            if draw_rect.width() > 20.0 && draw_rect.height() > 20.0 {
                 // For files, show a truncated name if needed
-                let display_name = if !square.entry.is_directory && square.rect.width() < 80.0 {
+                let display_name = if !square.entry.is_directory && draw_rect.width() < 80.0 {
                     // Get just the filename without path
                     let filename = square.entry.name.clone();
                     if filename.len() > 10 {
@@ -492,7 +643,7 @@ impl Visualizer {
                 };
                 
                 ui.painter().text(
-                    square.rect.center(),
+                    draw_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     &display_name,
                     egui::FontId::proportional(font_size),
@@ -503,13 +654,13 @@ impl Visualizer {
             // For directories at Level2 or MaxIn, show additional info
             if square.entry.is_directory &&
                (self.zoom_level == ZoomLevel::Level2 || self.zoom_level == ZoomLevel::MaxIn) &&
-               square.rect.width() > 80.0 {
+               draw_rect.width() > 80.0 {
                 // Show item count
                 let item_count = square.entry.children.len();
                 let info_text = format!("{} items", item_count);
                 
                 ui.painter().text(
-                    square.rect.center_bottom() + egui::vec2(0.0, -10.0),
+                    draw_rect.center_bottom() + egui::vec2(0.0, -10.0),
                     egui::Align2::CENTER_BOTTOM,
                     &info_text,
                     egui::FontId::proportional(10.0),
@@ -522,11 +673,31 @@ impl Visualizer {
         if let Some(index) = self.hovered_index {
             let square = &self.squares[index];
             
-            // Position tooltip below or to the right of the square depending on space
-            let tooltip_pos = if square.rect.right() + 130.0 < canvas_rect.right() {
-                square.rect.right_center() + egui::vec2(5.0, 0.0)
+            // Get the actual rectangle to use for tooltip positioning
+            let rect_for_tooltip = if self.animating && square.prev_rect.is_some() {
+                // Use the interpolated rectangle for tooltip positioning
+                let prev_rect = square.prev_rect.unwrap();
+                let progress = square.animation_progress;
+                
+                // Linear interpolation between rectangles
+                let min_x = prev_rect.min.x + (square.rect.min.x - prev_rect.min.x) * progress;
+                let min_y = prev_rect.min.y + (square.rect.min.y - prev_rect.min.y) * progress;
+                let max_x = prev_rect.max.x + (square.rect.max.x - prev_rect.max.x) * progress;
+                let max_y = prev_rect.max.y + (square.rect.max.y - prev_rect.max.y) * progress;
+                
+                egui::Rect::from_min_max(
+                    egui::pos2(min_x, min_y),
+                    egui::pos2(max_x, max_y)
+                )
             } else {
-                square.rect.left_bottom() + egui::vec2(0.0, 5.0)
+                square.rect
+            };
+            
+            // Position tooltip below or to the right of the square depending on space
+            let tooltip_pos = if rect_for_tooltip.right() + 130.0 < canvas_rect.right() {
+                rect_for_tooltip.right_center() + egui::vec2(5.0, 0.0)
+            } else {
+                rect_for_tooltip.left_bottom() + egui::vec2(0.0, 5.0)
             };
             
             // Create tooltip content based on entry type
@@ -600,12 +771,13 @@ impl Visualizer {
         egui::Color32::from_rgb(180, 180, 180)
     }
     
-    /// Zooms the visualization in or out
-    /// 
+    /// Zooms the visualization in or out with animation
+    ///
     /// # Arguments
     /// * `zoom_in` - Whether to zoom in (true) or out (false)
     pub fn zoom(&mut self, zoom_in: bool) {
-        self.zoom_level = match (self.zoom_level, zoom_in) {
+        // Store the target zoom level
+        self.target_zoom_level = match (self.zoom_level, zoom_in) {
             (ZoomLevel::MaxOut, true) => ZoomLevel::Level1,
             (ZoomLevel::Level1, true) => ZoomLevel::Level2,
             (ZoomLevel::Level2, true) => ZoomLevel::MaxIn,
@@ -615,14 +787,61 @@ impl Visualizer {
             _ => self.zoom_level, // No change at the limits
         };
         
-        // Update all squares with the new zoom level
-        for square in &mut self.squares {
-            square.zoom_level = self.zoom_level;
+        // If no change, return early
+        if self.target_zoom_level == self.zoom_level {
+            return;
         }
+        
+        // Store the current state for animation
+        for square in &mut self.squares {
+            square.prev_rect = Some(square.rect);
+            square.animation_progress = 0.0;
+        }
+        
+        // Start animation
+        self.animating = true;
+        self.animation_start_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        
+        // Update the zoom level immediately
+        self.zoom_level = self.target_zoom_level;
         
         // Regenerate the visualization based on the new zoom level
         if let Some(root) = &self.root_entry {
             self.set_root_entry(root.clone());
+        }
+    }
+    
+    /// Updates animation state
+    ///
+    /// # Arguments
+    /// * `now` - Current time in seconds
+    pub fn update_animation(&mut self, now: f64) {
+        if !self.animating {
+            return;
+        }
+        
+        // Calculate elapsed time
+        let elapsed = now - self.animation_start_time;
+        
+        // Calculate progress (0.0 to 1.0)
+        let progress = (elapsed / self.animation_duration).min(1.0);
+        
+        // Update animation progress for all squares
+        for square in &mut self.squares {
+            square.animation_progress = progress;
+        }
+        
+        // Check if animation is complete
+        if progress >= 1.0 {
+            self.animating = false;
+            
+            // Clear previous rectangles
+            for square in &mut self.squares {
+                square.prev_rect = None;
+            }
         }
     }
 }
