@@ -61,10 +61,10 @@ impl DirectoryParser {
     }
     
     /// Parses a directory structure
-    /// 
+    ///
     /// # Arguments
     /// * `root_path` - Path to the root directory
-    /// 
+    ///
     /// # Returns
     /// Result with the parsed directory structure or an error
     pub fn parse_directory(&self, root_path: &Path) -> Result<DirectoryEntry, String> {
@@ -76,21 +76,86 @@ impl DirectoryParser {
             return Err(format!("Path is not a directory: {:?}", root_path));
         }
         
-        // In a real implementation, we would recursively traverse the directory
-        // For now, just return a simulated structure
-        
-        // TODO: Implement actual directory traversal
-        
+        // Get the directory name
         let root_name = root_path.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("root")
             .to_string();
         
+        // Recursively parse the directory structure
+        self.parse_directory_recursive(root_path, &root_name)
+    }
+    
+    /// Recursively parses a directory structure
+    ///
+    /// # Arguments
+    /// * `dir_path` - Path to the directory
+    /// * `dir_name` - Name of the directory
+    ///
+    /// # Returns
+    /// Result with the parsed directory structure or an error
+    fn parse_directory_recursive(&self, dir_path: &Path, dir_name: &str) -> Result<DirectoryEntry, String> {
+        // Create a vector to store child entries
+        let mut children = Vec::new();
+        
+        // Read the directory entries
+        let entries = match std::fs::read_dir(dir_path) {
+            Ok(entries) => entries,
+            Err(e) => return Err(format!("Failed to read directory: {}", e)),
+        };
+        
+        // Process each entry
+        for entry_result in entries {
+            // Get the directory entry
+            let entry = match entry_result {
+                Ok(entry) => entry,
+                Err(e) => return Err(format!("Failed to read directory entry: {}", e)),
+            };
+            
+            // Get the path of the entry
+            let path = entry.path();
+            
+            // Skip if the entry should be ignored
+            if self.should_ignore(&path) {
+                continue;
+            }
+            
+            // Get the metadata of the entry
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(e) => return Err(format!("Failed to get metadata: {}", e)),
+            };
+            
+            // Get the name of the entry
+            let name = path.file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            
+            // Create a DirectoryEntry for the entry
+            if metadata.is_dir() {
+                // Recursively parse subdirectories
+                match self.parse_directory_recursive(&path, &name) {
+                    Ok(child_entry) => children.push(child_entry),
+                    Err(e) => return Err(e),
+                }
+            } else {
+                // Add file entry
+                children.push(DirectoryEntry {
+                    name,
+                    path: path.to_path_buf(),
+                    is_directory: false,
+                    children: Vec::new(),
+                });
+            }
+        }
+        
+        // Create and return the DirectoryEntry for this directory
         Ok(DirectoryEntry {
-            name: root_name,
-            path: root_path.to_path_buf(),
+            name: dir_name.to_string(),
+            path: dir_path.to_path_buf(),
             is_directory: true,
-            children: Vec::new(), // Empty for now
+            children,
         })
     }
     
@@ -114,10 +179,10 @@ impl DirectoryParser {
     }
     
     /// Gets statistics for a directory structure
-    /// 
+    ///
     /// # Arguments
     /// * `entry` - The directory entry to analyze
-    /// 
+    ///
     /// # Returns
     /// Statistics for the directory structure
     pub fn get_statistics(&self, entry: &DirectoryEntry) -> DirectoryStatistics {
@@ -129,34 +194,50 @@ impl DirectoryParser {
             file_types: HashMap::new(),
         };
         
-        // In a real implementation, we would recursively analyze the directory
-        // For now, just return simulated statistics
+        // Calculate statistics recursively
+        self.calculate_statistics_recursive(entry, &mut stats, 0);
         
-        // TODO: Implement actual statistics calculation
+        stats
+    }
+    
+    /// Recursively calculates statistics for a directory structure
+    ///
+    /// # Arguments
+    /// * `entry` - The directory entry to analyze
+    /// * `stats` - The statistics to update
+    /// * `depth` - The current depth in the directory tree
+    fn calculate_statistics_recursive(&self, entry: &DirectoryEntry, stats: &mut DirectoryStatistics, depth: usize) {
+        // Update max depth
+        if depth > stats.max_depth {
+            stats.max_depth = depth;
+        }
         
         if entry.is_directory {
-            stats.total_directories = 1;
+            // Count this directory
+            stats.total_directories += 1;
             
-            // Count immediate children
+            // Recursively process children
             for child in &entry.children {
-                if child.is_directory {
-                    stats.total_directories += 1;
-                } else {
-                    stats.total_files += 1;
-                    
-                    // Extract file extension
-                    if let Some(extension) = child.path.extension() {
-                        if let Some(ext_str) = extension.to_str() {
-                            let count = stats.file_types.entry(ext_str.to_string())
-                                .or_insert(0);
-                            *count += 1;
-                        }
-                    }
+                self.calculate_statistics_recursive(child, stats, depth + 1);
+            }
+        } else {
+            // Count this file
+            stats.total_files += 1;
+            
+            // Get file size
+            if let Ok(metadata) = std::fs::metadata(&entry.path) {
+                stats.total_size_bytes += metadata.len();
+            }
+            
+            // Extract file extension
+            if let Some(extension) = entry.path.extension() {
+                if let Some(ext_str) = extension.to_str() {
+                    let count = stats.file_types.entry(ext_str.to_string())
+                        .or_insert(0);
+                    *count += 1;
                 }
             }
         }
-        
-        stats
     }
 }
 

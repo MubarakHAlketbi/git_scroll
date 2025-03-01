@@ -61,7 +61,7 @@ impl GitScrollApp {
     }
     
     /// Handles the clone button click
-    /// 
+    ///
     /// Initiates the repository cloning process if the URL is valid
     fn handle_clone_button(&mut self) {
         if self.is_cloning {
@@ -81,80 +81,57 @@ impl GitScrollApp {
         // Update git handler with keep_repository preference
         self.git_handler = GitHandler::new(self.keep_repository);
         
-        // In a real implementation, we would spawn a thread to clone the repository
-        // For now, just simulate cloning
+        // Create a temporary directory for the repository
+        // If keep_repository is true, we'll use a more permanent location later
+        let temp_dir = match tempfile::Builder::new()
+            .prefix("git_scroll_")
+            .tempdir() {
+                Ok(dir) => dir,
+                Err(e) => {
+                    self.status_message = format!("Failed to create temporary directory: {}", e);
+                    self.is_cloning = false;
+                    self.ui_handler.set_loading(false);
+                    return;
+                }
+            };
         
-        // TODO: Implement actual repository cloning using git2
-        // For now, we'll just simulate success after a delay
-        self.simulate_successful_clone();
-    }
-    
-    /// Simulates a successful repository clone
-    /// 
-    /// This is a placeholder for actual Git operations
-    fn simulate_successful_clone(&mut self) {
-        // In a real implementation, this would be replaced with actual Git operations
-        // For now, just update the state as if cloning succeeded
-        
-        // Simulate a repository path
-        self.repository_path = Some(PathBuf::from("./simulated_repo"));
-        
-        // Create a simple directory structure for demonstration
-        let root_entry = DirectoryEntry {
-            name: "simulated_repo".to_string(),
-            path: PathBuf::from("./simulated_repo"),
-            is_directory: true,
-            children: vec![
-                DirectoryEntry {
-                    name: "src".to_string(),
-                    path: PathBuf::from("./simulated_repo/src"),
-                    is_directory: true,
-                    children: vec![
-                        DirectoryEntry {
-                            name: "main.rs".to_string(),
-                            path: PathBuf::from("./simulated_repo/src/main.rs"),
-                            is_directory: false,
-                            children: vec![],
-                        },
-                        DirectoryEntry {
-                            name: "lib.rs".to_string(),
-                            path: PathBuf::from("./simulated_repo/src/lib.rs"),
-                            is_directory: false,
-                            children: vec![],
-                        },
-                    ],
-                },
-                DirectoryEntry {
-                    name: "docs".to_string(),
-                    path: PathBuf::from("./simulated_repo/docs"),
-                    is_directory: true,
-                    children: vec![
-                        DirectoryEntry {
-                            name: "README.md".to_string(),
-                            path: PathBuf::from("./simulated_repo/docs/README.md"),
-                            is_directory: false,
-                            children: vec![],
-                        },
-                    ],
-                },
-                DirectoryEntry {
-                    name: "Cargo.toml".to_string(),
-                    path: PathBuf::from("./simulated_repo/Cargo.toml"),
-                    is_directory: false,
-                    children: vec![],
-                },
-            ],
-        };
-        
-        // Set the directory structure
-        self.directory_structure = Some(root_entry.clone());
-        
-        // Update the visualizer
-        self.visualizer.set_root_entry(root_entry);
+        // Clone the repository
+        match self.git_handler.clone_repository(&self.git_url, temp_dir.path()) {
+            Ok(repo_path) => {
+                // Clone successful, parse the directory structure
+                match self.directory_parser.parse_directory(&repo_path) {
+                    Ok(root_entry) => {
+                        // Store the repository path
+                        self.repository_path = Some(repo_path);
+                        
+                        // Set the directory structure
+                        self.directory_structure = Some(root_entry.clone());
+                        
+                        // Update the visualizer
+                        self.visualizer.set_root_entry(root_entry);
+                        
+                        // Update state
+                        self.status_message = String::from("Repository cloned successfully");
+                    },
+                    Err(e) => {
+                        // Failed to parse directory
+                        self.status_message = format!("Failed to parse repository: {}", e);
+                        
+                        // Clean up the repository if not keeping it
+                        if !self.keep_repository {
+                            let _ = self.git_handler.cleanup(&repo_path);
+                        }
+                    }
+                }
+            },
+            Err(e) => {
+                // Clone failed
+                self.status_message = format!("Failed to clone repository: {}", e);
+            }
+        }
         
         // Update state
         self.is_cloning = false;
-        self.status_message = String::from("Repository cloned successfully");
         self.ui_handler.set_loading(false);
     }
     

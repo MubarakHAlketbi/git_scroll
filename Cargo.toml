@@ -20,6 +20,9 @@ tempfile = "3.17.1" # For temporary directory management
 # Regular expressions
 regex = "1.11.1"    # For pattern matching in file paths
 
+# Date and time handling
+chrono = "0.4.34"   # For formatting timestamps in repository metadata
+
 [profile.release]
 # Optimize for size
 opt-level = 'z'

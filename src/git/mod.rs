@@ -36,11 +36,11 @@ impl GitHandler {
     }
     
     /// Clones a Git repository
-    /// 
+    ///
     /// # Arguments
     /// * `url` - The Git URL to clone
     /// * `destination` - The destination path
-    /// 
+    ///
     /// # Returns
     /// Result with the path to the cloned repository or an error
     pub fn clone_repository(&self, url: &str, destination: &Path) -> Result<PathBuf, String> {
@@ -49,62 +49,107 @@ impl GitHandler {
             return Err("Invalid Git URL format".to_string());
         }
         
-        // In a real implementation, we would use git2 to clone the repository
-        // For now, just return a simulated path
+        // Use git2 to clone the repository
+        // The clone operation returns a Repository object on success
+        let repo = match git2::Repository::clone(url, destination) {
+            Ok(repo) => repo,
+            Err(e) => return Err(format!("Failed to clone: {}", e)),
+        };
         
-        // TODO: Implement actual Git cloning using git2
-        // Example:
-        // let repo = match git2::Repository::clone(url, destination) {
-        //     Ok(repo) => repo,
-        //     Err(e) => return Err(format!("Failed to clone: {}", e)),
-        // };
-        
-        Ok(destination.to_path_buf())
+        // Return the path to the repository
+        // We use path() to get the .git directory and parent_path() to get the repository root
+        // We use to_path_buf() to convert the Path reference to an owned PathBuf
+        Ok(repo.path().parent().unwrap_or(repo.path()).to_path_buf())
     }
     
     /// Cleans up temporary repositories
-    /// 
+    ///
     /// Removes cloned repositories if keep_repository is false
-    /// 
+    ///
     /// # Arguments
     /// * `repo_path` - Path to the repository
+    ///
+    /// # Returns
+    /// Result indicating success or an error message
     pub fn cleanup(&self, repo_path: &Path) -> Result<(), String> {
+        // Only remove the repository if keep_repository is false and the path exists
         if !self.keep_repository && repo_path.exists() {
-            // In a real implementation, we would remove the directory
-            // For now, just log the action
-            
-            // TODO: Implement actual directory removal
-            // Example:
-            // match std::fs::remove_dir_all(repo_path) {
-            //     Ok(_) => Ok(()),
-            //     Err(e) => Err(format!("Failed to remove repository: {}", e)),
-            // }
+            // Use std::fs::remove_dir_all to recursively remove the directory and its contents
+            match std::fs::remove_dir_all(repo_path) {
+                Ok(_) => Ok(()),
+                Err(e) => Err(format!("Failed to remove repository: {}", e)),
+            }
+        } else {
+            // If keep_repository is true or the path doesn't exist, just return Ok
+            Ok(())
         }
-        
-        Ok(())
     }
     
     /// Gets repository metadata
-    /// 
+    ///
     /// # Arguments
     /// * `repo_path` - Path to the repository
-    /// 
+    ///
     /// # Returns
     /// Result with repository metadata or an error
     pub fn get_repository_metadata(&self, repo_path: &Path) -> Result<RepositoryMetadata, String> {
-        // In a real implementation, we would use git2 to get repository metadata
-        // For now, just return simulated metadata
+        // Open the repository
+        let repo = match git2::Repository::open(repo_path) {
+            Ok(repo) => repo,
+            Err(e) => return Err(format!("Failed to open repository: {}", e)),
+        };
         
-        // TODO: Implement actual metadata extraction using git2
+        // Get repository name from the path
+        let name = repo_path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        
+        // Get current branch
+        let head = match repo.head() {
+            Ok(head) => head,
+            Err(e) => return Err(format!("Failed to get HEAD: {}", e)),
+        };
+        
+        let branch = match head.shorthand() {
+            Some(name) => name.to_string(),
+            None => "detached HEAD".to_string(),
+        };
+        
+        // Count commits
+        let mut revwalk = match repo.revwalk() {
+            Ok(revwalk) => revwalk,
+            Err(e) => return Err(format!("Failed to create revwalk: {}", e)),
+        };
+        
+        // Configure revwalk to start from HEAD
+        if let Err(e) = revwalk.push_head() {
+            return Err(format!("Failed to push HEAD to revwalk: {}", e));
+        }
+        
+        // Count commits
+        let commit_count = match revwalk.count() {
+            count => count,
+            // If counting fails, return 0
+        };
+        
+        // Get last commit date
+        let last_commit = match repo.head().and_then(|head| head.peel_to_commit()) {
+            Ok(commit) => commit,
+            Err(e) => return Err(format!("Failed to get last commit: {}", e)),
+        };
+        
+        let time = last_commit.time();
+        let timestamp = time.seconds();
+        let last_commit_date = chrono::NaiveDateTime::from_timestamp_opt(timestamp, 0)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         
         Ok(RepositoryMetadata {
-            name: repo_path.file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("unknown")
-                .to_string(),
-            branch: "main".to_string(),
-            commit_count: 0,
-            last_commit_date: "unknown".to_string(),
+            name,
+            branch,
+            commit_count,
+            last_commit_date,
         })
     }
 }
