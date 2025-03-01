@@ -4,8 +4,6 @@ mod directory;
 mod visualization;
 mod ui;
 
-use eframe::egui;
-
 /// Entry point for the Git Scroll application
 fn main() {
     // Log startup information
@@ -24,7 +22,7 @@ fn main() {
     match eframe::run_native(
         "Git Scroll",
         native_options,
-        Box::new(|cc| Ok(Box::new(app::GitScrollApp::new()))),
+        Box::new(|_cc| Ok(Box::new(app::GitScrollApp::new()))),
     ) {
         Ok(_) => println!("Application closed successfully"),
         Err(e) => eprintln!("Error running application: {}", e),

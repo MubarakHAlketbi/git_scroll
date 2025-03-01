@@ -44,6 +44,9 @@ pub struct Visualizer {
     /// Currently selected square index
     selected_index: Option<usize>,
     
+    /// Currently hovered square index
+    hovered_index: Option<usize>,
+    
     /// Current global zoom level
     zoom_level: ZoomLevel,
     
@@ -53,7 +56,7 @@ pub struct Visualizer {
 
 impl Visualizer {
     /// Creates a new Visualizer
-    /// 
+    ///
     /// # Returns
     /// A new Visualizer instance
     pub fn new() -> Self {
@@ -61,6 +64,7 @@ impl Visualizer {
             root_entry: None,
             squares: Vec::new(),
             selected_index: None,
+            hovered_index: None,
             zoom_level: ZoomLevel::MaxOut,
             file_type_colors: Self::initialize_file_colors(),
         }
@@ -103,41 +107,48 @@ impl Visualizer {
     }
     
     /// Handles mouse interaction with the visualization
-    /// 
+    ///
     /// # Arguments
     /// * `ui` - The egui UI to interact with
     /// * `pointer_pos` - The current pointer position
     /// * `clicked` - Whether the mouse was clicked
-    pub fn handle_interaction(&mut self, ui: &mut egui::Ui, pointer_pos: Option<egui::Pos2>, clicked: bool) {
+    pub fn handle_interaction(&mut self, _ui: &mut egui::Ui, pointer_pos: Option<egui::Pos2>, clicked: bool) {
+        // Reset hover state
+        self.hovered_index = None;
+        
+        // First, find the square that contains the pointer
+        let mut hover_index = None;
         if let Some(pos) = pointer_pos {
-            // Check if hovering over any square
-            for (index, square) in self.squares.iter_mut().enumerate() {
+            for (index, square) in self.squares.iter().enumerate() {
                 if square.rect.contains(pos) {
-                    // Show tooltip on hover
-                    ui.ctx().show_tooltip(|ui| {
-                        ui.label(&square.entry.name);
-                    });
-                    
-                    // Handle click
-                    if clicked {
-                        // Deselect previously selected square
-                        if let Some(prev_index) = self.selected_index {
-                            if prev_index != index {
-                                self.squares[prev_index].selected = false;
-                            }
-                        }
-                        
-                        // Select this square
-                        square.selected = true;
-                        self.selected_index = Some(index);
-                    }
+                    hover_index = Some(index);
+                    break;
                 }
             }
+        }
+        
+        // Update the hovered index
+        self.hovered_index = hover_index;
+        
+        // Handle click if needed
+        if clicked && hover_index.is_some() {
+            let index = hover_index.unwrap();
+            
+            // Deselect previously selected square if different
+            if let Some(prev_index) = self.selected_index {
+                if prev_index != index {
+                    self.squares[prev_index].selected = false;
+                }
+            }
+            
+            // Select the new square
+            self.squares[index].selected = true;
+            self.selected_index = Some(index);
         }
     }
     
     /// Renders the visualization
-    /// 
+    ///
     /// # Arguments
     /// * `ui` - The egui UI to render to
     pub fn render(&self, ui: &mut egui::Ui) {
@@ -169,8 +180,9 @@ impl Visualizer {
             // Draw the square border
             ui.painter().rect_stroke(
                 square.rect,
-                4.0, // Rounded corners
+                egui::CornerRadius::same(4), // Rounded corners using CornerRadius instead of deprecated Rounding
                 egui::Stroke::new(1.0, egui::Color32::BLACK),
+                egui::epaint::StrokeKind::Middle, // Fourth parameter required in egui 0.31.0 - Middle means half inside, half outside
             );
             
             // Draw the directory name
@@ -180,6 +192,29 @@ impl Visualizer {
                 egui::Align2::CENTER_CENTER,
                 &square.entry.name,
                 egui::FontId::proportional(14.0),
+                egui::Color32::WHITE,
+            );
+        }
+        
+        // Render tooltip if a square is hovered
+        if let Some(index) = self.hovered_index {
+            let square = &self.squares[index];
+            let tooltip_pos = square.rect.left_bottom() + egui::vec2(0.0, 5.0);
+            let tooltip_rect = egui::Rect::from_min_size(tooltip_pos, egui::vec2(120.0, 30.0));
+            
+            // Draw tooltip background
+            ui.painter().rect_filled(
+                tooltip_rect,
+                egui::CornerRadius::same(2), // Using CornerRadius instead of deprecated Rounding
+                egui::Color32::from_rgb(50, 50, 50),
+            );
+            
+            // Draw tooltip text
+            ui.painter().text(
+                tooltip_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                &square.entry.name,
+                egui::FontId::proportional(12.0),
                 egui::Color32::WHITE,
             );
         }
