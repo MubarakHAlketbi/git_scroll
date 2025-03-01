@@ -17,9 +17,6 @@ pub struct VisualSquare {
     /// Whether this square is currently hovered
     pub hovered: bool,
     
-    /// Whether this square represents a directory (vs a file)
-    pub is_directory: bool,
-    
     /// Size weight for proportional sizing (based on file/directory size)
     pub size_weight: f32,
     
@@ -199,7 +196,6 @@ impl Visualizer {
                 rect,
                 selected: false,
                 hovered: false,
-                is_directory: true,
                 size_weight: 1.0 / dir_count as f32, // Equal weight for grid layout
                 animation_progress: 0.0,
                 prev_rect: None,
@@ -360,7 +356,6 @@ impl Visualizer {
                 rect: item_rect,
                 selected: false,
                 hovered: false,
-                is_directory: child_entry.is_directory,
                 size_weight,
                 animation_progress: 0.0,
                 prev_rect: None,
@@ -445,7 +440,6 @@ impl Visualizer {
                     rect,
                     selected: false,
                     hovered: false,
-                    is_directory: true,
                     size_weight: 1.0 / directories.len() as f32, // Equal weight for directories
                     animation_progress: 0.0,
                     prev_rect: None,
@@ -483,7 +477,6 @@ impl Visualizer {
                     rect,
                     selected: false,
                     hovered: false,
-                    is_directory: false,
                     size_weight: 1.0 / files.len() as f32, // Equal weight for files
                     animation_progress: 0.0,
                     prev_rect: None,
@@ -550,7 +543,7 @@ impl Visualizer {
         // Draw each square
         for square in &self.squares {
             // Calculate opacity based on zoom factor for semantic transitions
-            let file_opacity = if !square.is_directory {
+            let file_opacity = if !square.entry.is_directory {
                 // Files fade in from zoom factor 1.0 to 2.0
                 ((self.zoom_factor - 1.0) / 1.0).clamp(0.0, 1.0)
             } else {
@@ -560,7 +553,7 @@ impl Visualizer {
             // Choose color based on type, selection state, and opacity
             let fill_color = if square.selected {
                 egui::Color32::from_rgb(100, 150, 250) // Blue for selected
-            } else if square.is_directory {
+            } else if square.entry.is_directory {
                 egui::Color32::from_rgb(70, 130, 180) // Steel blue for directories
             } else {
                 // For files, use the file type color with calculated opacity
@@ -660,7 +653,7 @@ impl Visualizer {
             
             // For directories at higher zoom levels, show additional info
             let details_opacity = ((self.zoom_factor - 2.0) / 1.0).clamp(0.0, 1.0); // Fades in from 2.0 to 3.0
-            if square.is_directory && details_opacity > 0.0 && draw_rect.width() > 80.0 {
+            if square.entry.is_directory && details_opacity > 0.0 && draw_rect.width() > 80.0 {
                 // Show item count
                 let item_count = square.entry.children.len();
                 let info_text = format!("{} items", item_count);
@@ -712,7 +705,7 @@ impl Visualizer {
             let content_detail = ((self.zoom_factor - 3.0) / 1.0).clamp(0.0, 1.0); // Fades in from 3.0 to 4.0
             
             // Create tooltip content based on entry type and zoom level
-            let tooltip_text = if square.is_directory {
+            let tooltip_text = if square.entry.is_directory {
                 if content_detail > 0.5 && !square.entry.children.is_empty() {
                     // At high zoom, show more details about directory contents
                     let child_count = square.entry.children.len();
