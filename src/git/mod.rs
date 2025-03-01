@@ -141,7 +141,8 @@ impl GitHandler {
         
         let time = last_commit.time();
         let timestamp = time.seconds();
-        let last_commit_date = chrono::NaiveDateTime::from_timestamp_opt(timestamp, 0)
+        // Use DateTime::from_timestamp instead of deprecated NaiveDateTime::from_timestamp_opt
+        let last_commit_date = chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| "unknown".to_string());
         
