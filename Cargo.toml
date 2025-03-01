@@ -1,0 +1,29 @@
+[package]
+name = "git_scroll"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A tool for visualizing Git repository structures and exporting to LLMs"
+readme = "README.md"
+license = "MIT"
+
+[dependencies]
+# GUI framework
+eframe = "0.26.2"  # Cross-platform GUI framework based on egui
+
+# Git operations
+git2 = "0.18.3"    # Rust bindings to libgit2 for Git operations
+
+# File system operations
+tempfile = "3.17.1" # For temporary directory management
+
+# Regular expressions
+regex = "1.11.1"    # For pattern matching in file paths
+
+[profile.release]
+# Optimize for size
+opt-level = 'z'
+lto = true
+codegen-units = 1
+panic = 'abort'
+strip = true
