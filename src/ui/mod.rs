@@ -118,7 +118,9 @@ impl UiHandler {
     /// * `text` - The tooltip text
     /// * `pos` - The position to show the tooltip at
     pub fn render_tooltip(&self, ui: &mut egui::Ui, text: &str, pos: egui::Pos2) {
-        ui.ctx().tooltip_text(pos, text);
+        ui.ctx().show_tooltip(|ui| {
+            ui.label(text);
+        });
     }
     
     /// Renders zoom controls

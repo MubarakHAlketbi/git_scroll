@@ -114,7 +114,9 @@ impl Visualizer {
             for (index, square) in self.squares.iter_mut().enumerate() {
                 if square.rect.contains(pos) {
                     // Show tooltip on hover
-                    ui.ctx().tooltip_text(pos, &square.entry.name);
+                    ui.ctx().show_tooltip(|ui| {
+                        ui.label(&square.entry.name);
+                    });
                     
                     // Handle click
                     if clicked {

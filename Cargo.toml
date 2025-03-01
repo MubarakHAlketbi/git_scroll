@@ -9,7 +9,7 @@ license = "MIT"
 
 [dependencies]
 # GUI framework
-eframe = "0.26.2"  # Cross-platform GUI framework based on egui
+eframe = "0.31.0"  # Cross-platform GUI framework based on egui
 
 # Git operations
 git2 = "0.18.3"    # Rust bindings to libgit2 for Git operations

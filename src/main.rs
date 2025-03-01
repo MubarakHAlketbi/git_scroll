@@ -4,7 +4,7 @@ mod directory;
 mod visualization;
 mod ui;
 
-use eframe::{egui, epaint};
+use eframe::egui;
 
 /// Entry point for the Git Scroll application
 fn main() {
@@ -13,9 +13,10 @@ fn main() {
     
     // Set up native options
     let native_options = eframe::NativeOptions {
-        initial_window_size: Some(egui::vec2(1024.0, 768.0)),
-        min_window_size: Some(egui::vec2(800.0, 600.0)),
-        centered: true,
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_inner_size([1024.0, 768.0])
+            .with_min_inner_size([800.0, 600.0])
+            .with_position([100.0, 100.0]),
         ..Default::default()
     };
     
@@ -23,7 +24,7 @@ fn main() {
     match eframe::run_native(
         "Git Scroll",
         native_options,
-        Box::new(|cc| Box::new(app::GitScrollApp::new())),
+        Box::new(|cc| Ok(Box::new(app::GitScrollApp::new()))),
     ) {
         Ok(_) => println!("Application closed successfully"),
         Err(e) => eprintln!("Error running application: {}", e),
