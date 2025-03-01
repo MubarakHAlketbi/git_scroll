@@ -1,5 +1,6 @@
 use eframe::egui;
 use crate::directory::DirectoryEntry;
+use crate::directory::DirectoryStatistics;
 use std::collections::HashMap;
 
 /// Represents a visual square in the project area
@@ -16,8 +17,8 @@ pub struct VisualSquare {
     /// Whether this square is currently hovered
     pub hovered: bool,
     
-    /// Current zoom level for this square
-    pub zoom_level: ZoomLevel,
+    /// Whether this square represents a directory (vs a file)
+    pub is_directory: bool,
     
     /// Size weight for proportional sizing (based on file/directory size)
     pub size_weight: f32,
@@ -29,20 +30,19 @@ pub struct VisualSquare {
     pub prev_rect: Option<egui::Rect>,
 }
 
-/// Represents different zoom levels for visualization
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ZoomLevel {
-    /// Maximum zoom out - only directory squares visible
-    MaxOut,
-    
-    /// Level 1 - Squares show files/subdirectories as rectangles
-    Level1,
-    
-    /// Level 2 - Active square expands to show partial file content
-    Level2,
-    
-    /// Maximum zoom in - Deepest directory level with all contents visible
-    MaxIn,
+/// Helper function for smooth animation with ease-in-out quadratic interpolation
+///
+/// # Arguments
+/// * `t` - Progress value between 0.0 and 1.0
+///
+/// # Returns
+/// Eased value between 0.0 and 1.0
+fn ease_in_out_quad(t: f32) -> f32 {
+    if t < 0.5 {
+        2.0 * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
+    }
 }
 
 /// Handles visualization of the directory structure
@@ -59,11 +59,11 @@ pub struct Visualizer {
     /// Currently hovered square index
     hovered_index: Option<usize>,
     
-    /// Current global zoom level
-    zoom_level: ZoomLevel,
+    /// Current zoom factor (1.0 to 4.0)
+    zoom_factor: f32,
     
-    /// Target zoom level during transitions
-    target_zoom_level: ZoomLevel,
+    /// Target zoom factor during transitions
+    target_zoom_factor: f32,
     
     /// Animation in progress flag
     animating: bool,
@@ -92,8 +92,8 @@ impl Visualizer {
             squares: Vec::new(),
             selected_index: None,
             hovered_index: None,
-            zoom_level: ZoomLevel::MaxOut,
-            target_zoom_level: ZoomLevel::MaxOut,
+            zoom_factor: 1.0, // Start at minimum zoom (equivalent to MaxOut)
+            target_zoom_factor: 1.0,
             animating: false,
             animation_start_time: 0.0,
             animation_duration: 0.3, // 300ms animation duration
@@ -130,20 +130,17 @@ impl Visualizer {
             // Clone the root to avoid borrowing issues
             let root_clone = root.clone();
             
-            // Create the layout based on zoom level
-            match self.zoom_level {
-                ZoomLevel::MaxOut => {
-                    // At MaxOut, only show top-level directories in a grid layout
-                    self.generate_grid_layout(&root_clone, canvas_width, canvas_height, 0);
-                },
-                ZoomLevel::Level1 => {
-                    // At Level1, show directories and files with different sizes
-                    self.generate_treemap_layout(&root_clone, canvas_width, canvas_height);
-                },
-                ZoomLevel::Level2 | ZoomLevel::MaxIn => {
-                    // At deeper zoom levels, show more detail
-                    self.generate_detailed_layout(&root_clone, canvas_width, canvas_height);
-                }
+            // Create the layout based on zoom factor
+            if self.zoom_factor < 2.0 {
+                // At lower zoom (1.0-2.0), use grid layout with increasing detail
+                let detail_level = ((self.zoom_factor - 1.0) * 10.0) as usize;
+                self.generate_grid_layout(&root_clone, canvas_width, canvas_height, detail_level);
+            } else if self.zoom_factor < 3.0 {
+                // At medium zoom (2.0-3.0), use treemap layout
+                self.generate_treemap_layout(&root_clone, canvas_width, canvas_height);
+            } else {
+                // At higher zoom (3.0-4.0), show detailed layout
+                self.generate_detailed_layout(&root_clone, canvas_width, canvas_height);
             }
         }
     }
@@ -154,8 +151,8 @@ impl Visualizer {
     /// * `entry` - The directory entry to visualize
     /// * `width` - Available width
     /// * `height` - Available height
-    /// * `depth` - Current depth in the directory tree
-    fn generate_grid_layout(&mut self, entry: &DirectoryEntry, width: f32, height: f32, depth: usize) {
+    /// * `_depth` - Current depth in the directory tree (unused but kept for future use)
+    fn generate_grid_layout(&mut self, entry: &DirectoryEntry, width: f32, height: f32, _depth: usize) {
         // Only process if this is a directory
         if !entry.is_directory {
             return;
@@ -202,7 +199,7 @@ impl Visualizer {
                 rect,
                 selected: false,
                 hovered: false,
-                zoom_level: self.zoom_level,
+                is_directory: true,
                 size_weight: 1.0 / dir_count as f32, // Equal weight for grid layout
                 animation_progress: 0.0,
                 prev_rect: None,
@@ -363,7 +360,7 @@ impl Visualizer {
                 rect: item_rect,
                 selected: false,
                 hovered: false,
-                zoom_level: self.zoom_level,
+                is_directory: child_entry.is_directory,
                 size_weight,
                 animation_progress: 0.0,
                 prev_rect: None,
@@ -448,7 +445,7 @@ impl Visualizer {
                     rect,
                     selected: false,
                     hovered: false,
-                    zoom_level: self.zoom_level,
+                    is_directory: true,
                     size_weight: 1.0 / directories.len() as f32, // Equal weight for directories
                     animation_progress: 0.0,
                     prev_rect: None,
@@ -486,7 +483,7 @@ impl Visualizer {
                     rect,
                     selected: false,
                     hovered: false,
-                    zoom_level: self.zoom_level,
+                    is_directory: false,
                     size_weight: 1.0 / files.len() as f32, // Equal weight for files
                     animation_progress: 0.0,
                     prev_rect: None,
@@ -552,14 +549,24 @@ impl Visualizer {
         
         // Draw each square
         for square in &self.squares {
-            // Choose color based on type and selection state
+            // Calculate opacity based on zoom factor for semantic transitions
+            let file_opacity = if !square.is_directory {
+                // Files fade in from zoom factor 1.0 to 2.0
+                ((self.zoom_factor - 1.0) / 1.0).clamp(0.0, 1.0)
+            } else {
+                1.0 // Directories are always fully visible
+            };
+            
+            // Choose color based on type, selection state, and opacity
             let fill_color = if square.selected {
                 egui::Color32::from_rgb(100, 150, 250) // Blue for selected
-            } else if square.entry.is_directory {
+            } else if square.is_directory {
                 egui::Color32::from_rgb(70, 130, 180) // Steel blue for directories
             } else {
-                // For files, use the file type color
-                self.get_file_color(&square.entry.name)
+                // For files, use the file type color with calculated opacity
+                let base_color = self.get_file_color(&square.entry.name);
+                let alpha = (file_opacity * 255.0) as u8;
+                egui::Color32::from_rgba_unmultiplied(base_color.r(), base_color.g(), base_color.b(), alpha)
             };
             
             // Determine corner radius based on type (as u8 for CornerRadius::same)
@@ -651,20 +658,21 @@ impl Visualizer {
                 );
             }
             
-            // For directories at Level2 or MaxIn, show additional info
-            if square.entry.is_directory &&
-               (self.zoom_level == ZoomLevel::Level2 || self.zoom_level == ZoomLevel::MaxIn) &&
-               draw_rect.width() > 80.0 {
+            // For directories at higher zoom levels, show additional info
+            let details_opacity = ((self.zoom_factor - 2.0) / 1.0).clamp(0.0, 1.0); // Fades in from 2.0 to 3.0
+            if square.is_directory && details_opacity > 0.0 && draw_rect.width() > 80.0 {
                 // Show item count
                 let item_count = square.entry.children.len();
                 let info_text = format!("{} items", item_count);
                 
+                // Apply opacity based on zoom level for smooth fade-in
+                let text_alpha = (details_opacity * 180.0) as u8;
                 ui.painter().text(
                     draw_rect.center_bottom() + egui::vec2(0.0, -10.0),
                     egui::Align2::CENTER_BOTTOM,
                     &info_text,
                     egui::FontId::proportional(10.0),
-                    egui::Color32::from_rgba_premultiplied(255, 255, 255, 180),
+                    egui::Color32::from_rgba_premultiplied(255, 255, 255, text_alpha),
                 );
             }
         }
@@ -700,12 +708,34 @@ impl Visualizer {
                 rect_for_tooltip.left_bottom() + egui::vec2(0.0, 5.0)
             };
             
-            // Create tooltip content based on entry type
-            let tooltip_text = if square.entry.is_directory {
-                format!("{}\n{} items", square.entry.name, square.entry.children.len())
+            // Calculate content detail level based on zoom factor
+            let content_detail = ((self.zoom_factor - 3.0) / 1.0).clamp(0.0, 1.0); // Fades in from 3.0 to 4.0
+            
+            // Create tooltip content based on entry type and zoom level
+            let tooltip_text = if square.is_directory {
+                if content_detail > 0.5 && !square.entry.children.is_empty() {
+                    // At high zoom, show more details about directory contents
+                    let child_count = square.entry.children.len();
+                    let file_count = square.entry.children.iter().filter(|c| !c.is_directory).count();
+                    let dir_count = child_count - file_count;
+                    format!("{}\n{} items ({} files, {} dirs)",
+                            square.entry.name, child_count, file_count, dir_count)
+                } else {
+                    format!("{}\n{} items", square.entry.name, square.entry.children.len())
+                }
             } else {
-                // For files, show the full path
-                format!("{}", square.entry.name)
+                // For files, show more details at higher zoom levels
+                if content_detail > 0.5 {
+                    // At high zoom, show file details like size if available
+                    if let Ok(metadata) = std::fs::metadata(&square.entry.path) {
+                        let size_kb = metadata.len() / 1024;
+                        format!("{}\nSize: {} KB", square.entry.name, size_kb)
+                    } else {
+                        format!("{}", square.entry.name)
+                    }
+                } else {
+                    format!("{}", square.entry.name)
+                }
             };
             
             // Calculate tooltip size based on content
@@ -776,21 +806,20 @@ impl Visualizer {
     /// # Arguments
     /// * `zoom_in` - Whether to zoom in (true) or out (false)
     pub fn zoom(&mut self, zoom_in: bool) {
-        // Store the target zoom level
-        self.target_zoom_level = match (self.zoom_level, zoom_in) {
-            (ZoomLevel::MaxOut, true) => ZoomLevel::Level1,
-            (ZoomLevel::Level1, true) => ZoomLevel::Level2,
-            (ZoomLevel::Level2, true) => ZoomLevel::MaxIn,
-            (ZoomLevel::MaxIn, false) => ZoomLevel::Level2,
-            (ZoomLevel::Level2, false) => ZoomLevel::Level1,
-            (ZoomLevel::Level1, false) => ZoomLevel::MaxOut,
-            _ => self.zoom_level, // No change at the limits
+        // Calculate the new target zoom factor with fine-grained control
+        let zoom_step: f32 = 0.1; // Small increments for smooth zooming
+        let new_target = if zoom_in {
+            (self.zoom_factor + zoom_step).min(4.0) // Max zoom is 4.0
+        } else {
+            (self.zoom_factor - zoom_step).max(1.0) // Min zoom is 1.0
         };
         
-        // If no change, return early
-        if self.target_zoom_level == self.zoom_level {
+        // If no significant change, return early
+        if (new_target - self.target_zoom_factor).abs() < 0.01 {
             return;
         }
+        
+        self.target_zoom_factor = new_target;
         
         // Store the current state for animation
         for square in &mut self.squares {
@@ -805,10 +834,7 @@ impl Visualizer {
             .unwrap_or_default()
             .as_secs_f64();
         
-        // Update the zoom level immediately
-        self.zoom_level = self.target_zoom_level;
-        
-        // Regenerate the visualization based on the new zoom level
+        // Regenerate the visualization based on the new zoom factor
         if let Some(root) = &self.root_entry {
             self.set_root_entry(root.clone());
         }
@@ -829,14 +855,21 @@ impl Visualizer {
         // Calculate progress (0.0 to 1.0)
         let progress = (elapsed / self.animation_duration).min(1.0);
         
+        // Apply easing function for smoother animation
+        let eased_progress = ease_in_out_quad(progress as f32);
+        
+        // Interpolate zoom factor
+        self.zoom_factor = self.zoom_factor + (self.target_zoom_factor - self.zoom_factor) * eased_progress;
+        
         // Update animation progress for all squares
         for square in &mut self.squares {
-            square.animation_progress = progress;
+            square.animation_progress = eased_progress;
         }
         
         // Check if animation is complete
         if progress >= 1.0 {
             self.animating = false;
+            self.zoom_factor = self.target_zoom_factor; // Ensure we reach exactly the target
             
             // Clear previous rectangles
             for square in &mut self.squares {
@@ -868,30 +901,44 @@ mod tests {
     }
     
     #[test]
-    fn test_zoom_levels() {
+    fn test_zoom_factors() {
         let mut visualizer = Visualizer::new();
         
-        // Start at MaxOut
-        assert_eq!(visualizer.zoom_level, ZoomLevel::MaxOut);
+        // Start at minimum zoom (1.0)
+        assert_eq!(visualizer.zoom_factor, 1.0);
         
         // Zoom in once
         visualizer.zoom(true);
-        assert_eq!(visualizer.zoom_level, ZoomLevel::Level1);
+        assert!(visualizer.target_zoom_factor > 1.0);
         
-        // Zoom in again
-        visualizer.zoom(true);
-        assert_eq!(visualizer.zoom_level, ZoomLevel::Level2);
+        // Zoom in several times to reach maximum
+        for _ in 0..30 {
+            visualizer.zoom(true);
+        }
         
-        // Zoom in to max
-        visualizer.zoom(true);
-        assert_eq!(visualizer.zoom_level, ZoomLevel::MaxIn);
+        // Should be capped at maximum (4.0)
+        assert_eq!(visualizer.target_zoom_factor, 4.0);
         
-        // Try to zoom in beyond max (should stay at MaxIn)
-        visualizer.zoom(true);
-        assert_eq!(visualizer.zoom_level, ZoomLevel::MaxIn);
-        
-        // Zoom out
+        // Zoom out once
         visualizer.zoom(false);
-        assert_eq!(visualizer.zoom_level, ZoomLevel::Level2);
+        assert!(visualizer.target_zoom_factor < 4.0);
+        
+        // Zoom out several times to reach minimum
+        for _ in 0..30 {
+            visualizer.zoom(false);
+        }
+        
+        // Should be capped at minimum (1.0)
+        assert_eq!(visualizer.target_zoom_factor, 1.0);
+    }
+    
+    #[test]
+    fn test_easing_function() {
+        // Test start, middle and end points
+        assert_eq!(ease_in_out_quad(0.0), 0.0);
+        assert!(ease_in_out_quad(0.25) < 0.25); // Slower at the beginning
+        assert_eq!(ease_in_out_quad(0.5), 0.5); // Linear at the middle
+        assert!(ease_in_out_quad(0.75) > 0.75); // Faster approaching the end
+        assert_eq!(ease_in_out_quad(1.0), 1.0);
     }
 }
