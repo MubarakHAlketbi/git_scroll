@@ -3,6 +3,7 @@ use crate::directory::DirectoryEntry;
 use crate::directory::DirectoryStatistics;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 /// Represents a visual square in the project area
@@ -113,7 +114,7 @@ pub struct Visualizer {
     file_content_cache: Arc<Mutex<HashMap<String, String>>>,
     
     /// Flag to indicate if file content is being loaded
-    loading_file_content: bool,
+    loading_file_content: AtomicBool,
 }
 
 impl Visualizer {
@@ -139,7 +140,7 @@ impl Visualizer {
             dragging_index: None,
             layout_cache: HashMap::new(),
             file_content_cache: Arc::new(Mutex::new(HashMap::new())),
-            loading_file_content: false,
+            loading_file_content: AtomicBool::new(false),
         }
     }
     
@@ -869,7 +870,7 @@ impl Visualizer {
     ///
     /// # Arguments
     /// * `path` - Path to the file
-    fn load_file_content(&mut self, path: &std::path::Path) {
+    fn load_file_content(&self, path: &std::path::Path) {
         let path_str = path.to_string_lossy().to_string();
         
         // Check if we already have the content cached
@@ -879,8 +880,8 @@ impl Visualizer {
             }
         }
         
-        // Set loading flag
-        self.loading_file_content = true;
+        // Set loading flag using atomic operation
+        self.loading_file_content.store(true, Ordering::SeqCst);
         
         // Clone the path and cache for the thread
         let path_clone = path.to_path_buf();
