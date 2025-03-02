@@ -45,8 +45,8 @@ impl GitScrollApp {
     /// Returns a new GitScrollApp with default values
     pub fn new() -> Self {
         // Create channels for background processing
-        let (clone_sender, clone_receiver) = mpsc::channel();
-        let (parse_sender, parse_receiver) = mpsc::channel();
+        let (_clone_sender, clone_receiver) = mpsc::channel();
+        let (_parse_sender, parse_receiver) = mpsc::channel();
         
         // Initialize with default values
         Self {
@@ -286,6 +286,58 @@ impl GitScrollApp {
     }
 }
 
+impl GitScrollApp {
+    // ... existing methods ...
+
+    /// Checks for results from background operations
+    fn check_background_operations(&mut self) {
+        // Check for clone results
+        if let Ok(repo_path_result) = self.clone_receiver.try_recv() {
+            match repo_path_result {
+                Ok(repo_path) => {
+                    self.repository_path = Some(repo_path);
+                    self.status_message = String::from("Repository cloned successfully, parsing directory...");
+                },
+                Err(e) => {
+                    self.status_message = format!("Failed to clone repository: {}", e);
+                    self.is_cloning = false;
+                    self.ui_handler.set_loading(false);
+                }
+            }
+        }
+        
+        // Check for parse results
+        if let Ok(parse_result) = self.parse_receiver.try_recv() {
+            match parse_result {
+                Ok(root_entry) => {
+                    // Set the directory structure
+                    self.directory_structure = Some(root_entry.clone());
+                    
+                    // Update the visualizer
+                    self.visualizer.set_root_entry(root_entry);
+                    
+                    // Update state
+                    self.status_message = String::from("Repository parsed successfully");
+                    self.is_cloning = false;
+                    self.ui_handler.set_loading(false);
+                },
+                Err(e) => {
+                    // Failed to parse directory
+                    self.status_message = format!("Failed to parse repository: {}", e);
+                    
+                    // Clean up the repository if not keeping it
+                    if !self.keep_repository && self.repository_path.is_some() {
+                        let _ = self.git_handler.cleanup(self.repository_path.as_ref().unwrap());
+                    }
+                    
+                    self.is_cloning = false;
+                    self.ui_handler.set_loading(false);
+                }
+            }
+        }
+    }
+}
+
 impl eframe::App for GitScrollApp {
     /// Updates the application state and renders the UI
     ///
@@ -385,54 +437,6 @@ impl eframe::App for GitScrollApp {
                 self.visualizer.render(ui);
             }
         });
-    }
-    
-    /// Checks for results from background operations
-    fn check_background_operations(&mut self) {
-        // Check for clone results
-        if let Ok(repo_path_result) = self.clone_receiver.try_recv() {
-            match repo_path_result {
-                Ok(repo_path) => {
-                    self.repository_path = Some(repo_path);
-                    self.status_message = String::from("Repository cloned successfully, parsing directory...");
-                },
-                Err(e) => {
-                    self.status_message = format!("Failed to clone repository: {}", e);
-                    self.is_cloning = false;
-                    self.ui_handler.set_loading(false);
-                }
-            }
-        }
-        
-        // Check for parse results
-        if let Ok(parse_result) = self.parse_receiver.try_recv() {
-            match parse_result {
-                Ok(root_entry) => {
-                    // Set the directory structure
-                    self.directory_structure = Some(root_entry.clone());
-                    
-                    // Update the visualizer
-                    self.visualizer.set_root_entry(root_entry);
-                    
-                    // Update state
-                    self.status_message = String::from("Repository parsed successfully");
-                    self.is_cloning = false;
-                    self.ui_handler.set_loading(false);
-                },
-                Err(e) => {
-                    // Failed to parse directory
-                    self.status_message = format!("Failed to parse repository: {}", e);
-                    
-                    // Clean up the repository if not keeping it
-                    if !self.keep_repository && self.repository_path.is_some() {
-                        let _ = self.git_handler.cleanup(self.repository_path.as_ref().unwrap());
-                    }
-                    
-                    self.is_cloning = false;
-                    self.ui_handler.set_loading(false);
-                }
-            }
-        }
     }
 }
 
