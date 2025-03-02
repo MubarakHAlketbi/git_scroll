@@ -48,6 +48,7 @@ enum SortColumn {
 }
 
 /// Enum for sort direction
+#[derive(PartialEq)]
 enum SortDirection {
     Ascending,
     Descending,
@@ -618,6 +619,14 @@ impl eframe::App for GitScrollApp {
             if self.directory_structure.is_none() {
                 self.ui_handler.render_empty_state(ui);
             } else {
+                // Get the visualization rect for the visualizer
+                let visualization_rect = ui.available_rect_before_wrap();
+                
+                // Ensure the visualizer has squares generated
+                if self.visualizer.squares.is_empty() && self.directory_structure.is_some() {
+                    self.visualizer.generate_squares(visualization_rect);
+                }
+                
                 // Show file list heading with loading indicator if needed
                 ui.horizontal(|ui| {
                     ui.heading("File List");
@@ -631,75 +640,53 @@ impl eframe::App for GitScrollApp {
                 let row_height = ui.text_style_height(&text_style);
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
-                    let table = egui::TableBuilder::new(ui)
+                    egui::Grid::new("file_list_grid")
                         .striped(true)
-                        .column(egui::Column::auto().at_least(50.0))
-                        .column(egui::Column::remainder().at_least(200.0))
-                        .column(egui::Column::auto().at_least(100.0))
-                        .header(20.0, |mut header| {
-                            header.col(|ui| {
-                                if ui.button("Number").clicked() {
-                                    self.sort_column = SortColumn::Index;
-                                    self.sort_direction = match self.sort_direction {
-                                        SortDirection::Ascending => SortDirection::Descending,
-                                        SortDirection::Descending => SortDirection::Ascending,
-                                    };
-                                    self.sort_file_list();
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("File Name").clicked() {
-                                    self.sort_column = SortColumn::Name;
-                                    self.sort_direction = match self.sort_direction {
-                                        SortDirection::Ascending => SortDirection::Descending,
-                                        SortDirection::Descending => SortDirection::Ascending,
-                                    };
-                                    self.sort_file_list();
-                                }
-                            });
-                            header.col(|ui| {
-                                if ui.button("Token Count").clicked() {
-                                    self.sort_column = SortColumn::Tokens;
-                                    self.sort_direction = match self.sort_direction {
-                                        SortDirection::Ascending => SortDirection::Descending,
-                                        SortDirection::Descending => SortDirection::Ascending,
-                                    };
-                                    self.sort_file_list();
-                                }
-                            });
-                        });
+                        .min_col_width(50.0)  // Minimum width for "Number"
+                        .show(ui, |ui| {
+                            // Header
+                            if ui.button("Number").clicked() {
+                                self.sort_column = SortColumn::Index;
+                                self.sort_direction = match self.sort_direction {
+                                    SortDirection::Ascending => SortDirection::Descending,
+                                    SortDirection::Descending => SortDirection::Ascending,
+                                };
+                                self.sort_file_list();
+                            }
+                            if ui.button("File Name").clicked() {
+                                self.sort_column = SortColumn::Name;
+                                self.sort_direction = match self.sort_direction {
+                                    SortDirection::Ascending => SortDirection::Descending,
+                                    SortDirection::Descending => SortDirection::Ascending,
+                                };
+                                self.sort_file_list();
+                            }
+                            if ui.button("Token Count").clicked() {
+                                self.sort_column = SortColumn::Tokens;
+                                self.sort_direction = match self.sort_direction {
+                                    SortDirection::Ascending => SortDirection::Descending,
+                                    SortDirection::Descending => SortDirection::Ascending,
+                                };
+                                self.sort_file_list();
+                            }
+                            ui.end_row();
 
-                    table.body(|mut body| {
-                        // File rows
-                        for file in &self.file_list {
-                            body.row(row_height, |mut row| {
-                                row.col(|ui| {
-                                    ui.label(file.index.to_string());
-                                });
-                                row.col(|ui| {
-                                    ui.label(file.path.to_string_lossy());
-                                });
-                                row.col(|ui| {
-                                    ui.label(file.tokens.to_string());
-                                });
-                            });
-                        }
+                            // File rows
+                            for file in &self.file_list {
+                                ui.label(file.index.to_string());
+                                ui.label(file.path.to_string_lossy());
+                                ui.label(file.tokens.to_string());
+                                ui.end_row();
+                            }
 
-                        // Total row
-                        let total_files = self.file_list.len();
-                        let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
-                        body.row(row_height, |mut row| {
-                            row.col(|ui| {
-                                ui.label(""); // Empty cell
-                            });
-                            row.col(|ui| {
-                                ui.strong(format!("Total: {} files", total_files));
-                            });
-                            row.col(|ui| {
-                                ui.strong(total_tokens.to_string());
-                            });
+                            // Total row
+                            let total_files = self.file_list.len();
+                            let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
+                            ui.label(""); // Empty cell
+                            ui.strong(format!("Total: {} files", total_files));
+                            ui.strong(total_tokens.to_string());
+                            ui.end_row();
                         });
-                    });
                 });
             }
         });

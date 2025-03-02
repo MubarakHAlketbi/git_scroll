@@ -158,7 +158,8 @@ impl Visualizer {
         // Clear layout cache when setting a new root entry
         self.layout_cache.clear();
         
-        self.generate_squares();
+        // Defer layout generation to render/update with visualization_rect
+        self.squares.clear();
     }
     
     /// Sets the current layout type
@@ -182,8 +183,8 @@ impl Visualizer {
                 .unwrap_or_default()
                 .as_secs_f64();
             
-            // Regenerate squares with the new layout
-            self.generate_squares();
+            // Clear cache; regenerate in render
+            self.layout_cache.clear();
         }
     }
     
