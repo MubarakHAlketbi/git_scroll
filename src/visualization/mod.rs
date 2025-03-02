@@ -415,7 +415,6 @@ impl Visualizer {
         let child_count = children.len();
         
         // Create nodes with initial positions
-        let mut nodes: Vec<VisualSquare> = Vec::new();
         for (i, child) in children.iter().enumerate() {
             let angle = 2.0 * std::f32::consts::PI * (i as f32) / (child_count as f32);
             let x = center_x + radius * angle.cos();
@@ -822,16 +821,16 @@ impl Visualizer {
                                     .arg(path)
                                     .spawn()
                                     .ok();
-                                ctx.close_viewport();
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
                             if ui.button("Set as Root").clicked() {
                                 self.set_root_entry(self.squares[index].entry.clone());
-                                ctx.close_viewport();
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
                         } else {
                             if ui.button("View Content").clicked() {
                                 self.load_file_content(&self.squares[index].entry.path);
-                                ctx.close_viewport();
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
                             if ui.button("Open in Default App").clicked() {
                                 let path = self.squares[index].entry.path.clone();
@@ -839,7 +838,7 @@ impl Visualizer {
                                     .args(&["/c", "start", "", path.to_string_lossy().as_ref()])
                                     .spawn()
                                     .ok();
-                                ctx.close_viewport();
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
                         }
                     });
