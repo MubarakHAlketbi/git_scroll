@@ -1,8 +1,6 @@
 use eframe::egui;
 use std::time::Duration;
-use std::sync::Arc;
 use egui::LayerId;
-use eframe::epaint::{Margin, CornerRadius};
 
 /// Handles UI components and interactions
 pub struct UiHandler {
@@ -286,7 +284,9 @@ impl UiHandler {
                 })
                 .corner_radius(10.0)
                 .shadow(egui::epaint::Shadow {
-                    extrusion: 5.0,
+                    offset: [0, 0],
+                    blur: 5,
+                    spread: 0,
                     color: egui::Color32::from_black_alpha(40),
                 })
                 .show(ui, |ui| {

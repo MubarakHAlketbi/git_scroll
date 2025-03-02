@@ -621,7 +621,7 @@ impl eframe::App for GitScrollApp {
                     // Table header with custom styling
                     let header_frame = egui::Frame::default()
                         .fill(header_color)
-                        .inner_margin(Margin::symmetric(8.0, 4.0));
+                        .inner_margin(Margin::symmetric(8, 4));
                     
                     header_frame.show(ui, |ui| {
                         egui::Grid::new("file_list_header")
@@ -699,7 +699,7 @@ impl eframe::App for GitScrollApp {
                                 let row_color = if i % 2 == 0 { even_row_color } else { odd_row_color };
                                 let row_frame = egui::Frame::default()
                                     .fill(row_color)
-                                    .inner_margin(Margin::symmetric(8.0, 4.0));
+                                    .inner_margin(Margin::symmetric(8, 4));
                                 
                                 row_frame.show(ui, |ui| {
                                     ui.horizontal(|ui| {
@@ -737,8 +737,8 @@ impl eframe::App for GitScrollApp {
                                             
                                             egui::Frame::default()
                                                 .fill(token_color)
-                                                .corner_radius(CornerRadius::same(4.0))
-                                                .inner_margin(Margin::symmetric(6.0, 2.0))
+                                                .corner_radius(CornerRadius::same(4))
+                                                .inner_margin(Margin::symmetric(6, 2))
                                                 .show(ui, |ui| {
                                                     ui.add_sized(
                                                         [100.0, 20.0],
@@ -762,7 +762,7 @@ impl eframe::App for GitScrollApp {
                             
                             let total_frame = egui::Frame::default()
                                 .fill(header_color)
-                                .inner_margin(Margin::symmetric(8.0, 4.0));
+                                .inner_margin(Margin::symmetric(8, 4));
                             
                             total_frame.show(ui, |ui| {
                                 ui.horizontal(|ui| {

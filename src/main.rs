@@ -31,11 +31,11 @@ fn main() {
 }
 
 /// Loads the application icon
-fn load_icon() -> eframe::IconData {
+fn load_icon() -> eframe::egui::viewport::IconData {
     // Default icon data (a simple blue square)
-    let width = 32;
-    let height = 32;
-    let mut rgba = Vec::with_capacity(width * height * 4);
+    let width: u32 = 32;
+    let height: u32 = 32;
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
     
     for y in 0..height {
         for x in 0..width {
@@ -52,7 +52,7 @@ fn load_icon() -> eframe::IconData {
         }
     }
     
-    eframe::IconData {
+    eframe::egui::viewport::IconData {
         rgba,
         width,
         height,
