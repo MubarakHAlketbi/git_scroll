@@ -1,5 +1,7 @@
 use eframe::egui;
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
 
 use crate::git::GitHandler;
 use crate::directory::{DirectoryParser, DirectoryEntry};
@@ -31,13 +33,21 @@ pub struct GitScrollApp {
     current_layout: LayoutType,
     current_theme: Theme,
     filter_pattern: String,
+    
+    // Background processing channels
+    clone_receiver: mpsc::Receiver<Result<PathBuf, String>>,
+    parse_receiver: mpsc::Receiver<Result<DirectoryEntry, String>>,
 }
 
 impl GitScrollApp {
     /// Creates a new instance of the GitScrollApp
-    /// 
+    ///
     /// Returns a new GitScrollApp with default values
     pub fn new() -> Self {
+        // Create channels for background processing
+        let (clone_sender, clone_receiver) = mpsc::channel();
+        let (parse_sender, parse_receiver) = mpsc::channel();
+        
         // Initialize with default values
         Self {
             git_url: String::new(),
@@ -58,6 +68,10 @@ impl GitScrollApp {
             current_layout: LayoutType::Grid,
             current_theme: Theme::Light,
             filter_pattern: String::new(),
+            
+            // Background processing channels
+            clone_receiver,
+            parse_receiver,
         }
     }
     
@@ -81,7 +95,7 @@ impl GitScrollApp {
         }
         
         if !self.validate_git_url(&self.git_url) {
-            self.status_message = String::from("Invalid Git URL. Must be HTTPS and end with .git");
+            self.status_message = String::from("Invalid Git URL format");
             return;
         }
         
@@ -90,11 +104,19 @@ impl GitScrollApp {
         self.status_message = String::from("Cloning repository...");
         self.ui_handler.set_loading(true);
         
+        // Create channels for this operation
+        let (clone_sender, clone_receiver) = mpsc::channel();
+        let (parse_sender, parse_receiver) = mpsc::channel();
+        self.clone_receiver = clone_receiver;
+        self.parse_receiver = parse_receiver;
+        
         // Update git handler with keep_repository preference
-        self.git_handler = GitHandler::new(self.keep_repository);
+        let git_handler = GitHandler::new(self.keep_repository);
+        
+        // Clone the git URL for the background thread
+        let git_url = self.git_url.clone();
         
         // Create a temporary directory for the repository
-        // If keep_repository is true, we'll use a more permanent location later
         let temp_dir = match tempfile::Builder::new()
             .prefix("git_scroll_")
             .tempdir() {
@@ -107,44 +129,21 @@ impl GitScrollApp {
                 }
             };
         
-        // Clone the repository
-        match self.git_handler.clone_repository(&self.git_url, temp_dir.path()) {
-            Ok(repo_path) => {
-                // Clone successful, parse the directory structure
-                match self.directory_parser.parse_directory(&repo_path) {
-                    Ok(root_entry) => {
-                        // Store the repository path
-                        self.repository_path = Some(repo_path);
-                        
-                        // Set the directory structure
-                        self.directory_structure = Some(root_entry.clone());
-                        
-                        // Update the visualizer
-                        self.visualizer.set_root_entry(root_entry);
-                        
-                        // Update state
-                        self.status_message = String::from("Repository cloned successfully");
-                    },
-                    Err(e) => {
-                        // Failed to parse directory
-                        self.status_message = format!("Failed to parse repository: {}", e);
-                        
-                        // Clean up the repository if not keeping it
-                        if !self.keep_repository {
-                            let _ = self.git_handler.cleanup(&repo_path);
-                        }
-                    }
-                }
-            },
-            Err(e) => {
-                // Clone failed
-                self.status_message = format!("Failed to clone repository: {}", e);
+        // Spawn a background thread to perform the cloning and parsing
+        thread::spawn(move || {
+            // Clone the repository
+            let repo_path_result = git_handler.clone_repository(&git_url, temp_dir.path());
+            
+            // Send the result back to the main thread
+            let _ = clone_sender.send(repo_path_result.clone());
+            
+            // If cloning was successful, parse the directory structure
+            if let Ok(repo_path) = repo_path_result {
+                let parser = DirectoryParser::new();
+                let parse_result = parser.parse_directory(&repo_path);
+                let _ = parse_sender.send(parse_result);
             }
-        }
-        
-        // Update state
-        self.is_cloning = false;
-        self.ui_handler.set_loading(false);
+        });
     }
     
     /// Handles zoom in/out actions
@@ -289,13 +288,16 @@ impl GitScrollApp {
 
 impl eframe::App for GitScrollApp {
     /// Updates the application state and renders the UI
-    /// 
+    ///
     /// # Arguments
     /// * `ctx` - The egui context
     /// * `_frame` - The eframe frame
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply custom styling
         crate::ui::style::apply_style(ctx);
+        
+        // Check for results from background operations
+        self.check_background_operations();
         
         // Left panel for settings
         egui::SidePanel::left("settings_panel")
@@ -384,6 +386,54 @@ impl eframe::App for GitScrollApp {
             }
         });
     }
+    
+    /// Checks for results from background operations
+    fn check_background_operations(&mut self) {
+        // Check for clone results
+        if let Ok(repo_path_result) = self.clone_receiver.try_recv() {
+            match repo_path_result {
+                Ok(repo_path) => {
+                    self.repository_path = Some(repo_path);
+                    self.status_message = String::from("Repository cloned successfully, parsing directory...");
+                },
+                Err(e) => {
+                    self.status_message = format!("Failed to clone repository: {}", e);
+                    self.is_cloning = false;
+                    self.ui_handler.set_loading(false);
+                }
+            }
+        }
+        
+        // Check for parse results
+        if let Ok(parse_result) = self.parse_receiver.try_recv() {
+            match parse_result {
+                Ok(root_entry) => {
+                    // Set the directory structure
+                    self.directory_structure = Some(root_entry.clone());
+                    
+                    // Update the visualizer
+                    self.visualizer.set_root_entry(root_entry);
+                    
+                    // Update state
+                    self.status_message = String::from("Repository parsed successfully");
+                    self.is_cloning = false;
+                    self.ui_handler.set_loading(false);
+                },
+                Err(e) => {
+                    // Failed to parse directory
+                    self.status_message = format!("Failed to parse repository: {}", e);
+                    
+                    // Clean up the repository if not keeping it
+                    if !self.keep_repository && self.repository_path.is_some() {
+                        let _ = self.git_handler.cleanup(self.repository_path.as_ref().unwrap());
+                    }
+                    
+                    self.is_cloning = false;
+                    self.ui_handler.set_loading(false);
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -395,12 +445,14 @@ mod tests {
         // Create a new app instance for testing
         let app = GitScrollApp::new();
         
-        // Test valid URL
+        // Test valid URLs
         assert!(app.validate_git_url("https://github.com/user/repo.git"));
+        assert!(app.validate_git_url("https://github.com/user/repo")); // No .git suffix is now valid
+        assert!(app.validate_git_url("git@github.com:user/repo.git")); // SSH format is now valid
+        assert!(app.validate_git_url("file:///path/to/repo")); // Local file path is now valid
+        assert!(app.validate_git_url("/absolute/path/to/repo")); // Absolute path is now valid
         
         // Test invalid URLs
-        assert!(!app.validate_git_url("http://github.com/user/repo.git")); // Not HTTPS
-        assert!(!app.validate_git_url("https://github.com/user/repo")); // No .git suffix
-        assert!(!app.validate_git_url("git@github.com:user/repo.git")); // SSH format
+        assert!(!app.validate_git_url("invalid-url")); // No protocol or path format
     }
 }

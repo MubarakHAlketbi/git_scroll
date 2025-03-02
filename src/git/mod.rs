@@ -22,16 +22,16 @@ impl GitHandler {
     }
     
     /// Validates a Git URL format
-    /// 
+    ///
     /// # Arguments
     /// * `url` - The URL to validate
-    /// 
+    ///
     /// # Returns
     /// `true` if the URL is valid, `false` otherwise
     pub fn validate_url(url: &str) -> bool {
-        // Simple validation for HTTPS Git URLs
-        // In a real implementation, this would be more robust
-        let re = Regex::new(r"^https://.*\.git$").unwrap();
+        // Enhanced validation for Git URLs supporting HTTPS, SSH, and local paths
+        // with optional .git suffix
+        let re = Regex::new(r"^(https://|git@|file://|/).*(\.git)?$").unwrap();
         re.is_match(url)
     }
     
@@ -44,16 +44,22 @@ impl GitHandler {
     /// # Returns
     /// Result with the path to the cloned repository or an error
     pub fn clone_repository(&self, url: &str, destination: &Path) -> Result<PathBuf, String> {
-        // Validate URL
-        if !Self::validate_url(url) {
-            return Err("Invalid Git URL format".to_string());
-        }
-        
         // Use git2 to clone the repository
         // The clone operation returns a Repository object on success
         let repo = match git2::Repository::clone(url, destination) {
             Ok(repo) => repo,
-            Err(e) => return Err(format!("Failed to clone: {}", e)),
+            Err(e) => {
+                // If cloning fails and the URL doesn't end with .git, try appending .git
+                if !url.ends_with(".git") {
+                    let url_with_git = format!("{}.git", url);
+                    match git2::Repository::clone(&url_with_git, destination) {
+                        Ok(repo) => repo,
+                        Err(e) => return Err(format!("Failed to clone: {}", e)),
+                    }
+                } else {
+                    return Err(format!("Failed to clone: {}", e));
+                }
+            }
         };
         
         // Return the path to the repository

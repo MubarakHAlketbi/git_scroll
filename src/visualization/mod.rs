@@ -267,9 +267,10 @@ impl Visualizer {
             return;
         }
         
-        // Calculate grid dimensions
-        let cols = (dir_count as f32).sqrt().ceil() as usize;
-        let rows = (dir_count + cols - 1) / cols; // Ceiling division
+        // Calculate grid dimensions based on aspect ratio for better layout
+        let aspect_ratio = width / height;
+        let cols = (dir_count as f32 * aspect_ratio).sqrt().ceil() as usize;
+        let rows = (dir_count as f32 / cols as f32).ceil() as usize;
         
         // Calculate cell size
         let cell_width = width / cols as f32;
@@ -1033,25 +1034,36 @@ impl Visualizer {
                 10.0
             };
             
-            // Draw name if there's enough space
+            // Draw name and size information if there's enough space
             if draw_rect.width() > 20.0 && draw_rect.height() > 20.0 {
-                // For files, show a truncated name if needed
-                let display_name = if !square.entry.is_directory && draw_rect.width() < 80.0 {
-                    // Get just the filename without path
-                    let filename = square.entry.name.clone();
-                    if filename.len() > 10 {
-                        format!("{}...", &filename[0..7])
+                // Prepare the display text with name and size information
+                let name = &square.entry.name;
+                let size_info = if square.entry.is_directory {
+                    format!("{} items", square.entry.children.len())
+                } else {
+                    if let Ok(metadata) = std::fs::metadata(&square.entry.path) {
+                        format!("{} KB", metadata.len() / 1024)
                     } else {
-                        filename
+                        "Unknown size".to_string()
+                    }
+                };
+                
+                // For smaller squares, show just the name with truncation if needed
+                let display_text = if draw_rect.width() < 80.0 {
+                    if name.len() > 10 {
+                        format!("{}...", &name[0..7])
+                    } else {
+                        name.clone()
                     }
                 } else {
-                    square.entry.name.clone()
+                    // For larger squares, show name and size information
+                    format!("{}\n{}", name, size_info)
                 };
                 
                 ui.painter().text(
                     draw_rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    &display_name,
+                    &display_text,
                     egui::FontId::proportional(font_size),
                     text_color,
                 );
