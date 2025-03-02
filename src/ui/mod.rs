@@ -156,7 +156,7 @@ impl UiHandler {
         ui.horizontal(|ui| {
             ui.label("Layout:");
             
-            egui::ComboBox::from_id_source("layout_selector")
+            egui::ComboBox::new(egui::Id::new("layout_selector"), "")
                 .selected_text(match current_layout {
                     crate::visualization::LayoutType::Grid => "Grid",
                     crate::visualization::LayoutType::Treemap => "Treemap",
@@ -216,7 +216,7 @@ impl UiHandler {
         ui.horizontal(|ui| {
             ui.label("Theme:");
             
-            egui::ComboBox::from_id_source("theme_selector")
+            egui::ComboBox::new(egui::Id::new("theme_selector"), "")
                 .selected_text(match current_theme {
                     crate::visualization::Theme::Light => "Light",
                     crate::visualization::Theme::Dark => "Dark",

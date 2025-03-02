@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 /// Represents a visual square in the project area
+#[derive(Clone)]
 pub struct VisualSquare {
     /// The directory entry this square represents
     pub entry: DirectoryEntry,
@@ -215,7 +216,7 @@ impl Visualizer {
             );
             
             if let Some(cached_squares) = self.layout_cache.get(&cache_key) {
-                self.squares = cached_squares.clone();
+                self.squares = cached_squares.to_vec();
                 return;
             }
             
@@ -327,7 +328,7 @@ impl Visualizer {
         
         // First pass: calculate sizes
         for child in children {
-            let child_size = if let Some(stats) = &self.directory_stats {
+            let child_size = if let Some(_stats) = &self.directory_stats {
                 if child.is_directory {
                     // For directories, use the total size of all contained files
                     // Get metadata for this directory
@@ -414,7 +415,7 @@ impl Visualizer {
         let child_count = children.len();
         
         // Create nodes with initial positions
-        let mut nodes = Vec::new();
+        let mut nodes: Vec<VisualSquare> = Vec::new();
         for (i, child) in children.iter().enumerate() {
             let angle = 2.0 * std::f32::consts::PI * (i as f32) / (child_count as f32);
             let x = center_x + radius * angle.cos();
@@ -670,8 +671,8 @@ impl Visualizer {
         if !files.is_empty() {
             // Apply Level of Detail (LOD) for files
             let lod_threshold = 0.01; // Threshold for grouping small files
-            let mut grouped_files = Vec::new();
-            let mut others_size = 0.0;
+            let mut grouped_files: Vec<DirectoryEntry> = Vec::new();
+            let mut _others_size = 0.0;
             let mut others_children = Vec::new();
             
             // Calculate total file size
@@ -697,10 +698,10 @@ impl Visualizer {
                     let weight = file_size as f32 / total_file_size as f32;
                     
                     if weight < lod_threshold {
-                        others_size += weight;
+                        _others_size += weight;
                         others_children.push((*file).clone());
                     } else {
-                        grouped_files.push(*file);
+                        grouped_files.push((*file).clone());
                     }
                 }
                 
@@ -714,10 +715,10 @@ impl Visualizer {
                         children: others_children,
                     };
                     
-                    grouped_files.push(&others_entry);
+                    grouped_files.push(others_entry);
                 }
             } else {
-                grouped_files = files;
+                grouped_files = files.iter().map(|f| (*f).clone()).collect();
             }
             
             let file_count = grouped_files.len();
@@ -740,11 +741,8 @@ impl Visualizer {
                     egui::vec2(file_cell_width - 2.0 * padding, file_cell_height - 2.0 * padding),
                 );
                 
-                // Clone the file entry to get an owned copy
-                let file_entry = (*file).clone();
-                
                 self.squares.push(VisualSquare {
-                    entry: file_entry,
+                    entry: file.clone(),
                     rect,
                     selected: false,
                     hovered: false,
@@ -809,34 +807,44 @@ impl Visualizer {
         // Handle right-click for context menu
         if ui.ctx().input(|i| i.pointer.secondary_clicked()) && hover_index.is_some() {
             let index = hover_index.unwrap();
-            ui.ctx().show_context_menu(|menu| {
-                if self.squares[index].entry.is_directory {
-                    menu.add_item(egui::Button::new("Open in Explorer").wrap(false), |_| {
-                        let path = self.squares[index].entry.path.clone();
-                        std::process::Command::new("explorer")
-                            .arg(path)
-                            .spawn()
-                            .ok();
+            let pos = ui.ctx().pointer_latest_pos().unwrap_or_default();
+            ui.ctx().show_viewport_immediate(
+                egui::ViewportId::from_hash_of("context_menu"),
+                egui::ViewportBuilder::default()
+                    .with_inner_size([200.0, 100.0])
+                    .with_position(pos),
+                |ctx, _class| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        if self.squares[index].entry.is_directory {
+                            if ui.button("Open in Explorer").clicked() {
+                                let path = self.squares[index].entry.path.clone();
+                                std::process::Command::new("explorer")
+                                    .arg(path)
+                                    .spawn()
+                                    .ok();
+                                ctx.close_viewport();
+                            }
+                            if ui.button("Set as Root").clicked() {
+                                self.set_root_entry(self.squares[index].entry.clone());
+                                ctx.close_viewport();
+                            }
+                        } else {
+                            if ui.button("View Content").clicked() {
+                                self.load_file_content(&self.squares[index].entry.path);
+                                ctx.close_viewport();
+                            }
+                            if ui.button("Open in Default App").clicked() {
+                                let path = self.squares[index].entry.path.clone();
+                                std::process::Command::new("cmd")
+                                    .args(&["/c", "start", "", path.to_string_lossy().as_ref()])
+                                    .spawn()
+                                    .ok();
+                                ctx.close_viewport();
+                            }
+                        }
                     });
-                    
-                    menu.add_item(egui::Button::new("Set as Root").wrap(false), |_| {
-                        self.set_root_entry(self.squares[index].entry.clone());
-                    });
-                } else {
-                    menu.add_item(egui::Button::new("View Content").wrap(false), |_| {
-                        // Load file content asynchronously
-                        self.load_file_content(&self.squares[index].entry.path);
-                    });
-                    
-                    menu.add_item(egui::Button::new("Open in Default App").wrap(false), |_| {
-                        let path = self.squares[index].entry.path.clone();
-                        std::process::Command::new("cmd")
-                            .args(&["/c", "start", "", path.to_string_lossy().as_ref()])
-                            .spawn()
-                            .ok();
-                    });
-                }
-            });
+                },
+            );
         }
         
         // Handle drag and drop

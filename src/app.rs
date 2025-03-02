@@ -172,7 +172,7 @@ impl GitScrollApp {
     /// * `theme` - The new theme
     fn handle_theme_change(&mut self, theme: Theme) {
         if self.current_theme != theme {
-            self.current_theme = theme;
+            self.current_theme = theme.clone();
             self.visualizer.set_theme(theme);
         }
     }
