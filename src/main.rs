@@ -1,7 +1,6 @@
 mod app;
 mod git;
 mod directory;
-mod visualization;
 mod ui;
 
 /// Entry point for the Git Scroll application

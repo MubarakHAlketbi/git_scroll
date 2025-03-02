@@ -5,7 +5,6 @@ use std::thread;
 
 use crate::git::GitHandler;
 use crate::directory::{DirectoryParser, DirectoryEntry};
-use crate::visualization::{Visualizer, LayoutType, Theme};
 use crate::ui::UiHandler;
 
 /// Represents a file's metadata for the list view
@@ -71,13 +70,10 @@ pub struct GitScrollApp {
     // Module handlers
     git_handler: GitHandler,
     directory_parser: DirectoryParser,
-    visualizer: Visualizer,
     ui_handler: UiHandler,
     
     // UI state
     show_stats_panel: bool,
-    current_layout: LayoutType,
-    current_theme: Theme,
     filter_pattern: String,
     
     // File list state
@@ -114,13 +110,10 @@ impl GitScrollApp {
             // Initialize module handlers
             git_handler: GitHandler::new(false),
             directory_parser: DirectoryParser::new(),
-            visualizer: Visualizer::new(),
             ui_handler: UiHandler::new(),
             
             // UI state
             show_stats_panel: true,
-            current_layout: LayoutType::Grid,
-            current_theme: Theme::Light,
             filter_pattern: String::new(),
             
             // File list state
@@ -207,36 +200,7 @@ impl GitScrollApp {
         });
     }
     
-    /// Handles zoom in/out actions
-    ///
-    /// # Arguments
-    /// * `zoom_in` - Whether to zoom in (true) or out (false)
-    /// * `visualization_rect` - The rectangle where visualization is rendered
-    fn handle_zoom(&mut self, zoom_in: bool, visualization_rect: egui::Rect) {
-        self.visualizer.zoom(zoom_in, visualization_rect);
-    }
-    
-    /// Handles layout type change
-    /// 
-    /// # Arguments
-    /// * `layout_type` - The new layout type
-    fn handle_layout_change(&mut self, layout_type: LayoutType) {
-        if self.current_layout != layout_type {
-            self.current_layout = layout_type;
-            self.visualizer.set_layout_type(layout_type);
-        }
-    }
-    
-    /// Handles theme change
-    /// 
-    /// # Arguments
-    /// * `theme` - The new theme
-    fn handle_theme_change(&mut self, theme: Theme) {
-        if self.current_theme != theme {
-            self.current_theme = theme.clone();
-            self.visualizer.set_theme(theme);
-        }
-    }
+    // Square-related methods removed (handle_zoom, handle_layout_change, handle_theme_change)
     
     /// Handles filter pattern change
     ///
@@ -254,7 +218,6 @@ impl GitScrollApp {
                 if let Some(repo_path) = &self.repository_path {
                     if let Ok(root_entry) = self.directory_parser.parse_directory(repo_path) {
                         self.directory_structure = Some(root_entry.clone());
-                        self.visualizer.set_root_entry(root_entry.clone());
                         
                         // Refresh the file list with updated filters
                         self.populate_file_list(&root_entry);
@@ -341,16 +304,7 @@ impl GitScrollApp {
         
         ui.add_space(10.0);
         
-        // Theme selection
-        ui.label("Theme:");
-        ui.horizontal(|ui| {
-            if ui.radio_value(&mut self.current_theme, Theme::Light, "Light").clicked() {
-                self.handle_theme_change(Theme::Light);
-            }
-            if ui.radio_value(&mut self.current_theme, Theme::Dark, "Dark").clicked() {
-                self.handle_theme_change(Theme::Dark);
-            }
-        });
+        // Theme selection removed - no longer needed
         
         ui.add_space(10.0);
         
@@ -486,9 +440,6 @@ impl GitScrollApp {
                     // Set the directory structure
                     self.directory_structure = Some(root_entry.clone());
                     
-                    // Update the visualizer
-                    self.visualizer.set_root_entry(root_entry.clone());
-                    
                     // Populate file list
                     self.populate_file_list(&root_entry);
                     
@@ -619,13 +570,7 @@ impl eframe::App for GitScrollApp {
             if self.directory_structure.is_none() {
                 self.ui_handler.render_empty_state(ui);
             } else {
-                // Get the visualization rect for the visualizer
-                let visualization_rect = ui.available_rect_before_wrap();
-                
-                // Ensure the visualizer has squares generated
-                if self.visualizer.squares.is_empty() && self.directory_structure.is_some() {
-                    self.visualizer.generate_squares(visualization_rect);
-                }
+                // Visualization code removed - no longer needed
                 
                 // Show file list heading with loading indicator if needed
                 ui.horizontal(|ui| {

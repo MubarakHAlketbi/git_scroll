@@ -4,16 +4,16 @@ A file listing and token counting tool for Git repositories, optimized for LLM c
 
 ## Overview
 
-Git Scroll is a desktop application that helps you analyze Git repositories by providing a sortable list of files with token counts. This makes it easier to prepare repositories for use with Large Language Models (LLMs) by understanding token usage across your codebase.
+Git Scroll is a desktop application that analyzes Git repositories by providing a sortable table of files with their token counts. This tool helps developers understand token usage across a codebase, making it ideal for preparing data for Large Language Models (LLMs).
 
 ![Git Scroll Screenshot](docs/screenshot.png) *(Screenshot will be added in the future)*
 
 ## Features
 
-- **File List View**: Sortable table of files with columns for index, file name, and token count
-- **Token Counting**: Automatically counts tokens in text files for LLM context optimization
-- **Sorting Options**: Sort by file name, index, or token count in ascending or descending order
-- **Filtering**: Built-in filters for common directories to ignore (node_modules, .git, etc.)
+- **Sortable File List**: Table with columns for index, file name, and token count, sortable by each column
+- **Token Counting**: Counts tokens (words) in text files to assess LLM context size
+- **Total Row**: Displays total files and tokens at the bottom of the list
+- **Filtering**: Ignores common directories (e.g., `.git`, `node_modules`)
 - **Statistics Panel**: Shows total files, total tokens, and top files by token count
 - **Cross-Platform**: Works on Windows, macOS, and Linux
 
@@ -44,29 +44,26 @@ Git Scroll is a desktop application that helps you analyze Git repositories by p
 ## Usage
 
 1. Enter a Git repository URL in the input field
-2. Click "Clone" to clone and analyze the repository
-3. View the list of files with their token counts
-4. Click on column headers to sort by different criteria
+2. Click "Clone" to fetch and analyze the repository
+3. View the sortable file list with token counts
+4. Click column headers to sort by index, name, or tokens
 5. Use the settings panel to change sort options or apply filters
 6. Check the statistics panel for token usage insights
-5. Export the repository structure for use with LLMs
 
 ## Project Structure
 
 ```
 git_scroll/
 ├── src/
-│   ├── main.rs           # Application entry point
-│   ├── app.rs            # Main application state
-│   ├── git/              # Git operations
-│   │   └── mod.rs        # Git module implementation
-│   ├── directory/        # Directory parsing
-│   │   └── mod.rs        # Directory module implementation
-│   ├── visualization/    # Rendering and visualization
-│   │   └── mod.rs        # Visualization module implementation
-│   └── ui/               # User interface components
-│       └── mod.rs        # UI module implementation
-└── Cargo.toml            # Dependencies and build configuration
+│   ├── main.rs      # Application entry point
+│   ├── app.rs       # Main application state and table view
+│   ├── git/         # Git operations
+│   │   └── mod.rs   # Git module implementation
+│   ├── directory/   # Directory parsing
+│   │   └── mod.rs   # Directory module implementation
+│   └── ui/          # User interface components
+│       └── mod.rs   # UI module implementation
+└── Cargo.toml       # Dependencies and build configuration
 ```
 
 ## Development

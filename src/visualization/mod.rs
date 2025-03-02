@@ -195,11 +195,19 @@ impl Visualizer {
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
     }
+    /// Checks if the squares collection is empty
+    ///
+    /// # Returns
+    /// * `bool` - True if squares is empty, false otherwise
+    pub fn are_squares_empty(&self) -> bool {
+        self.squares.is_empty()
+    }
+
     /// Generates visual squares from the directory structure
     ///
     /// # Arguments
     /// * `visualization_rect` - The rectangle where visualization will be rendered
-    fn generate_squares(&mut self, visualization_rect: egui::Rect) {
+    pub fn generate_squares(&mut self, visualization_rect: egui::Rect) {
         self.squares.clear();
         self.selected_index = None;
         self.hovered_index = None;  // Reset hovered_index to prevent stale indices
