@@ -16,8 +16,6 @@ fn main() {
             .with_position([100.0, 100.0])
             .with_title("Git Scroll - Repository Analyzer")
             .with_icon(load_icon()),
-        follow_system_theme: false, // We'll handle dark/light mode ourselves
-        default_theme: eframe::Theme::Dark,
         ..Default::default()
     };
     
@@ -33,7 +31,7 @@ fn main() {
 }
 
 /// Loads the application icon
-fn load_icon() -> eframe::IconData {
+fn load_icon() -> eframe::epi::IconData {
     // Default icon data (a simple blue square)
     let width = 32;
     let height = 32;
@@ -54,7 +52,7 @@ fn load_icon() -> eframe::IconData {
         }
     }
     
-    eframe::IconData {
+    eframe::epi::IconData {
         rgba,
         width,
         height,

@@ -1,5 +1,8 @@
 use eframe::egui;
 use std::time::Duration;
+use std::sync::Arc;
+use egui::LayerId;
+use epaint::{Margin, CornerRadius};
 
 /// Handles UI components and interactions
 pub struct UiHandler {
@@ -68,7 +71,7 @@ impl UiHandler {
             
             // Add tooltip to Clone button
             if clone_button.hovered() {
-                egui::show_tooltip(ui.ctx(), egui::Id::new("clone_tooltip"), |ui| {
+                egui::show_tooltip(ui.ctx(), LayerId::background(), egui::Id::new("clone_tooltip"), |ui| {
                     ui.label("Clone the repository and analyze its structure");
                 });
             }
@@ -88,7 +91,7 @@ impl UiHandler {
             
             // Add tooltip to Clear button
             if clear_button.hovered() {
-                egui::show_tooltip(ui.ctx(), egui::Id::new("clear_tooltip"), |ui| {
+                egui::show_tooltip(ui.ctx(), LayerId::background(), egui::Id::new("clear_tooltip"), |ui| {
                     ui.label("Clear the current repository and start over");
                 });
             }
@@ -281,9 +284,11 @@ impl UiHandler {
                 } else {
                     egui::Color32::from_rgb(240, 240, 245)
                 })
-                .rounding(10.0)
+                .corner_radius(10.0)
                 .shadow(egui::epaint::Shadow {
-                    extrusion: 5.0,
+                    offset: egui::vec2(0.0, 0.0),
+                    blur: 5.0,
+                    spread: 0.0,
                     color: egui::Color32::from_black_alpha(40),
                 })
                 .show(ui, |ui| {
@@ -419,7 +424,7 @@ pub mod style {
         // Add monospace font for code-related data
         fonts.font_data.insert(
             "jetbrains_mono".to_owned(),
-            egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf")),
+            Arc::new(egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf"))),
         );
         
         // Set monospace as the proportional font for code
@@ -457,7 +462,7 @@ pub mod style {
         // Add monospace font for code-related data
         fonts.font_data.insert(
             "jetbrains_mono".to_owned(),
-            egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf")),
+            Arc::new(egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf"))),
         );
         
         // Set monospace as the proportional font for code
@@ -474,7 +479,7 @@ pub mod style {
         style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(70, 70, 100);
         
         // Customize text colors for better contrast
-        style.visuals.widgets.noninteractive.text_color = egui::Color32::from_rgb(220, 220, 220);
+        style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 220, 220));
         
         // Customize spacing
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);

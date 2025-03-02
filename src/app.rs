@@ -2,6 +2,9 @@ use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
+use epaint::Margin;
+use epaint::CornerRadius;
+use egui::LayerId;
 
 use crate::git::GitHandler;
 use crate::directory::{DirectoryParser, DirectoryEntry};
@@ -9,11 +12,11 @@ use crate::ui::UiHandler;
 
 /// Represents a file's metadata for the list view
 #[derive(Clone)]
-struct FileInfo {
-    index: usize,          // Order in the list
-    path: PathBuf,         // Full path to the file
-    tokens: usize,         // Number of tokens in the file
-    selected: bool,        // Whether the file is selected
+pub struct FileInfo {
+    pub index: usize,          // Order in the list
+    pub path: PathBuf,         // Full path to the file
+    pub tokens: usize,         // Number of tokens in the file
+    pub selected: bool,        // Whether the file is selected
 }
 
 /// Counts tokens in a file by splitting on whitespace
@@ -41,7 +44,7 @@ fn count_tokens(path: &Path) -> usize {
 
 /// Enum for sortable columns
 #[derive(PartialEq)]
-enum SortColumn {
+pub enum SortColumn {
     Index,
     Name,
     Tokens,
@@ -49,7 +52,7 @@ enum SortColumn {
 
 /// Enum for sort direction
 #[derive(PartialEq)]
-enum SortDirection {
+pub enum SortDirection {
     Ascending,
     Descending,
 }
@@ -617,9 +620,9 @@ impl eframe::App for GitScrollApp {
                 // File list table
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     // Table header with custom styling
-                    let header_frame = egui::Frame::none()
+                    let header_frame = egui::Frame::default()
                         .fill(header_color)
-                        .inner_margin(egui::style::Margin::symmetric(8.0, 4.0));
+                        .inner_margin(Margin::symmetric(8.0, 4.0));
                     
                     header_frame.show(ui, |ui| {
                         egui::Grid::new("file_list_header")
@@ -695,9 +698,9 @@ impl eframe::App for GitScrollApp {
                             for (i, file) in self.file_list.iter().enumerate() {
                                 // Apply row background color based on index (striping)
                                 let row_color = if i % 2 == 0 { even_row_color } else { odd_row_color };
-                                let row_frame = egui::Frame::none()
+                                let row_frame = egui::Frame::default()
                                     .fill(row_color)
-                                    .inner_margin(egui::style::Margin::symmetric(8.0, 4.0));
+                                    .inner_margin(Margin::symmetric(8.0, 4.0));
                                 
                                 row_frame.show(ui, |ui| {
                                     ui.horizontal(|ui| {
@@ -719,7 +722,7 @@ impl eframe::App for GitScrollApp {
                                         
                                         // Show full path on hover
                                         if path_label.hovered() {
-                                            egui::show_tooltip(ui.ctx(), egui::Id::new("path_tooltip").with(i), |ui| {
+                                            egui::show_tooltip(ui.ctx(), LayerId::background(), egui::Id::new("path_tooltip").with(i), |ui| {
                                                 ui.label(path_str);
                                             });
                                         }
@@ -733,10 +736,10 @@ impl eframe::App for GitScrollApp {
                                                 self.ui_handler.is_dark_mode()
                                             );
                                             
-                                            egui::Frame::none()
+                                            egui::Frame::default()
                                                 .fill(token_color)
-                                                .rounding(egui::Rounding::same(4.0))
-                                                .inner_margin(egui::style::Margin::symmetric(6.0, 2.0))
+                                                .corner_radius(CornerRadius::same(4.0))
+                                                .inner_margin(Margin::symmetric(6.0, 2.0))
                                                 .show(ui, |ui| {
                                                     ui.add_sized(
                                                         [100.0, 20.0],
@@ -758,9 +761,9 @@ impl eframe::App for GitScrollApp {
                             let total_files = self.file_list.len();
                             let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
                             
-                            let total_frame = egui::Frame::none()
+                            let total_frame = egui::Frame::default()
                                 .fill(header_color)
-                                .inner_margin(egui::style::Margin::symmetric(8.0, 4.0));
+                                .inner_margin(Margin::symmetric(8.0, 4.0));
                             
                             total_frame.show(ui, |ui| {
                                 ui.horizontal(|ui| {
