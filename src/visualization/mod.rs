@@ -199,6 +199,7 @@ impl Visualizer {
     fn generate_squares(&mut self) {
         self.squares.clear();
         self.selected_index = None;
+        self.hovered_index = None;  // Reset hovered_index to prevent stale indices
         
         if let Some(root) = &self.root_entry {
             // Calculate the available canvas size
