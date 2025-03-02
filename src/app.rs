@@ -13,6 +13,7 @@ struct FileInfo {
     index: usize,          // Order in the list
     path: PathBuf,         // Full path to the file
     tokens: usize,         // Number of tokens in the file
+    selected: bool,        // Whether the file is selected
 }
 
 /// Counts tokens in a file by splitting on whitespace
@@ -359,6 +360,7 @@ impl GitScrollApp {
                 index,
                 path: path.clone(),
                 tokens: 0, // Will be updated asynchronously
+                selected: false, // Not selected by default
             });
         }
         
@@ -515,36 +517,18 @@ impl eframe::App for GitScrollApp {
     /// * `ctx` - The egui context
     /// * `_frame` - The eframe frame
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Apply custom styling
-        crate::ui::style::apply_style(ctx);
+        // Apply custom styling based on dark mode setting
+        crate::ui::style::apply_style(ctx, self.ui_handler.is_dark_mode());
         
         // Check for results from background operations
         self.check_background_operations(ctx);
         
-        // Left panel for settings
-        egui::SidePanel::left("settings_panel")
-            .resizable(true)
-            .default_width(200.0)
-            .show(ctx, |ui| {
-                self.render_settings_panel(ui);
-            });
-        
-        // Right panel for statistics (if enabled)
-        if self.show_stats_panel && self.directory_structure.is_some() {
-            egui::SidePanel::right("stats_panel")
-                .resizable(true)
-                .default_width(200.0)
-                .show(ctx, |ui| {
-                    self.render_stats_panel(ui);
-                });
-        }
-        
-        // Main central panel
-        egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("Git Scroll");
+        // Top panel for URL input and controls
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            ui.add_space(4.0);
             
-            // Top section: URL input and clone button
-            let clone_clicked = self.ui_handler.render_top_bar(
+            // Top bar with URL input and clone button
+            let (clone_clicked, clear_clicked) = self.ui_handler.render_top_bar(
                 ui,
                 &mut self.git_url,
                 &mut self.keep_repository,
@@ -554,87 +538,287 @@ impl eframe::App for GitScrollApp {
                 self.handle_clone_button();
             }
             
-            // Status message
-            self.ui_handler.render_status_bar(ui, &self.status_message);
-            
-            // Toggle for stats panel
-            if self.directory_structure.is_some() {
-                ui.checkbox(&mut self.show_stats_panel, "Show Statistics");
+            if clear_clicked {
+                self.clear_repository();
             }
             
-            // Main content area
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(10.0);
-            
-            if self.directory_structure.is_none() {
-                self.ui_handler.render_empty_state(ui);
-            } else {
-                // Visualization code removed - no longer needed
+            ui.add_space(4.0);
+        });
+        
+        // Controls panel for sorting and filtering
+        if self.directory_structure.is_some() {
+            egui::TopBottomPanel::top("controls_panel").show(ctx, |ui| {
+                ui.add_space(4.0);
                 
+                // Controls bar with sorting and filtering options
+                if self.ui_handler.render_controls_bar(
+                    ui,
+                    &mut self.sort_column,
+                    &mut self.sort_direction,
+                    &mut self.filter_pattern,
+                ) {
+                    // If controls changed, update the file list
+                    self.handle_filter_change(self.filter_pattern.clone());
+                    self.sort_file_list();
+                }
+                
+                ui.add_space(4.0);
+            });
+        }
+        
+        // Bottom panel for status and stats
+        egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
+            ui.add_space(4.0);
+            
+            // Status bar
+            self.ui_handler.render_status_bar(ui, &self.status_message);
+            
+            // Stats bar (if repository is loaded)
+            if self.directory_structure.is_some() {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(4.0);
+                self.ui_handler.render_stats_bar(ui, &self.file_list);
+            }
+            
+            ui.add_space(4.0);
+        });
+        
+        // Main central panel
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.directory_structure.is_none() {
+                // Empty state when no repository is loaded
+                self.ui_handler.render_empty_state(ui, &mut self.git_url);
+            } else {
                 // Show file list heading with loading indicator if needed
                 ui.horizontal(|ui| {
-                    ui.heading("File List");
+                    ui.heading("Repository Files");
                     if self.is_loading_tokens {
                         ui.spinner();
                         ui.label("Counting tokens...");
                     }
                 });
-
-                let text_style = egui::TextStyle::Body;
-                let row_height = ui.text_style_height(&text_style);
-
+                
+                ui.add_space(8.0);
+                
+                // Calculate max tokens for color scaling
+                let max_tokens = self.file_list.iter()
+                    .map(|f| f.tokens)
+                    .max()
+                    .unwrap_or(1);
+                
+                // Get row colors for striping
+                let (even_row_color, odd_row_color) =
+                    crate::ui::style::row_colors(self.ui_handler.is_dark_mode());
+                
+                // Get header color
+                let header_color = crate::ui::style::header_color(self.ui_handler.is_dark_mode());
+                
+                // File list table
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Table header with custom styling
+                    let header_frame = egui::Frame::none()
+                        .fill(header_color)
+                        .inner_margin(egui::style::Margin::symmetric(8.0, 4.0));
+                    
+                    header_frame.show(ui, |ui| {
+                        egui::Grid::new("file_list_header")
+                            .num_columns(3)
+                            .spacing([8.0, 4.0])
+                            .show(ui, |ui| {
+                                // Number column
+                                let index_text = format!("Number {}",
+                                    if self.sort_column == SortColumn::Index {
+                                        if self.sort_direction == SortDirection::Ascending { "↑" } else { "↓" }
+                                    } else { "" }
+                                );
+                                
+                                if ui.add(egui::Button::new(egui::RichText::new(index_text).strong())
+                                    .min_size(egui::vec2(60.0, 0.0)))
+                                    .clicked() {
+                                    self.sort_column = SortColumn::Index;
+                                    self.sort_direction = match self.sort_direction {
+                                        SortDirection::Ascending => SortDirection::Descending,
+                                        SortDirection::Descending => SortDirection::Ascending,
+                                    };
+                                    self.sort_file_list();
+                                }
+                                
+                                // File name column
+                                let name_text = format!("File Name {}",
+                                    if self.sort_column == SortColumn::Name {
+                                        if self.sort_direction == SortDirection::Ascending { "↑" } else { "↓" }
+                                    } else { "" }
+                                );
+                                
+                                if ui.add(egui::Button::new(egui::RichText::new(name_text).strong()))
+                                    .clicked() {
+                                    self.sort_column = SortColumn::Name;
+                                    self.sort_direction = match self.sort_direction {
+                                        SortDirection::Ascending => SortDirection::Descending,
+                                        SortDirection::Descending => SortDirection::Ascending,
+                                    };
+                                    self.sort_file_list();
+                                }
+                                
+                                // Token count column
+                                let tokens_text = format!("Token Count {}",
+                                    if self.sort_column == SortColumn::Tokens {
+                                        if self.sort_direction == SortDirection::Ascending { "↑" } else { "↓" }
+                                    } else { "" }
+                                );
+                                
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.add(egui::Button::new(egui::RichText::new(tokens_text).strong())
+                                        .min_size(egui::vec2(100.0, 0.0)))
+                                        .clicked() {
+                                        self.sort_column = SortColumn::Tokens;
+                                        self.sort_direction = match self.sort_direction {
+                                            SortDirection::Ascending => SortDirection::Descending,
+                                            SortDirection::Descending => SortDirection::Ascending,
+                                        };
+                                        self.sort_file_list();
+                                    }
+                                });
+                                
+                                ui.end_row();
+                            });
+                    });
+                    
+                    // Table body
                     egui::Grid::new("file_list_grid")
-                        .striped(true)
-                        .min_col_width(50.0)  // Minimum width for "Number"
+                        .num_columns(3)
+                        .spacing([8.0, 4.0])
+                        .striped(false) // We'll handle striping manually
                         .show(ui, |ui| {
-                            // Header
-                            if ui.button("Number").clicked() {
-                                self.sort_column = SortColumn::Index;
-                                self.sort_direction = match self.sort_direction {
-                                    SortDirection::Ascending => SortDirection::Descending,
-                                    SortDirection::Descending => SortDirection::Ascending,
-                                };
-                                self.sort_file_list();
-                            }
-                            if ui.button("File Name").clicked() {
-                                self.sort_column = SortColumn::Name;
-                                self.sort_direction = match self.sort_direction {
-                                    SortDirection::Ascending => SortDirection::Descending,
-                                    SortDirection::Descending => SortDirection::Ascending,
-                                };
-                                self.sort_file_list();
-                            }
-                            if ui.button("Token Count").clicked() {
-                                self.sort_column = SortColumn::Tokens;
-                                self.sort_direction = match self.sort_direction {
-                                    SortDirection::Ascending => SortDirection::Descending,
-                                    SortDirection::Descending => SortDirection::Ascending,
-                                };
-                                self.sort_file_list();
-                            }
-                            ui.end_row();
-
                             // File rows
-                            for file in &self.file_list {
-                                ui.label(file.index.to_string());
-                                ui.label(file.path.to_string_lossy());
-                                ui.label(file.tokens.to_string());
+                            for (i, file) in self.file_list.iter().enumerate() {
+                                // Apply row background color based on index (striping)
+                                let row_color = if i % 2 == 0 { even_row_color } else { odd_row_color };
+                                let row_frame = egui::Frame::none()
+                                    .fill(row_color)
+                                    .inner_margin(egui::style::Margin::symmetric(8.0, 4.0));
+                                
+                                row_frame.show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        // Index column (fixed width)
+                                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                            ui.add_sized([60.0, 20.0], egui::Label::new(file.index.to_string()));
+                                        });
+                                        
+                                        // File path column (truncated with tooltip)
+                                        let path_str = file.path.to_string_lossy();
+                                        let truncated_path = crate::ui::UiHandler::truncate_path(&path_str, 50);
+                                        
+                                        let path_label = ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(truncated_path)
+                                                    .family(egui::FontFamily::Monospace)
+                                            )
+                                        );
+                                        
+                                        // Show full path on hover
+                                        if path_label.hovered() {
+                                            egui::show_tooltip(ui.ctx(), egui::Id::new("path_tooltip").with(i), |ui| {
+                                                ui.label(path_str);
+                                            });
+                                        }
+                                        
+                                        // Token count column (right-aligned with background color)
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            // Create a colored background based on token count
+                                            let token_color = crate::ui::style::token_count_color(
+                                                file.tokens,
+                                                max_tokens,
+                                                self.ui_handler.is_dark_mode()
+                                            );
+                                            
+                                            egui::Frame::none()
+                                                .fill(token_color)
+                                                .rounding(egui::Rounding::same(4.0))
+                                                .inner_margin(egui::style::Margin::symmetric(6.0, 2.0))
+                                                .show(ui, |ui| {
+                                                    ui.add_sized(
+                                                        [100.0, 20.0],
+                                                        egui::Label::new(
+                                                            egui::RichText::new(file.tokens.to_string())
+                                                                .strong()
+                                                                .family(egui::FontFamily::Monospace)
+                                                        )
+                                                    );
+                                                });
+                                        });
+                                    });
+                                });
+                                
                                 ui.end_row();
                             }
-
-                            // Total row
+                            
+                            // Total row with custom styling
                             let total_files = self.file_list.len();
                             let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
-                            ui.label(""); // Empty cell
-                            ui.strong(format!("Total: {} files", total_files));
-                            ui.strong(total_tokens.to_string());
+                            
+                            let total_frame = egui::Frame::none()
+                                .fill(header_color)
+                                .inner_margin(egui::style::Margin::symmetric(8.0, 4.0));
+                            
+                            total_frame.show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    // Empty index cell
+                                    ui.add_sized([60.0, 20.0], egui::Label::new(""));
+                                    
+                                    // Total label
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(format!("Total: {} files", total_files))
+                                                .strong()
+                                        )
+                                    );
+                                    
+                                    // Total tokens (right-aligned)
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        ui.add_sized(
+                                            [100.0, 20.0],
+                                            egui::Label::new(
+                                                egui::RichText::new(total_tokens.to_string())
+                                                    .strong()
+                                                    .family(egui::FontFamily::Monospace)
+                                            )
+                                        );
+                                    });
+                                });
+                            });
+                            
                             ui.end_row();
                         });
                 });
             }
         });
+    }
+}
+
+impl GitScrollApp {
+    /// Clears the current repository and resets the application state
+    fn clear_repository(&mut self) {
+        // Clean up the repository if not keeping it
+        if !self.keep_repository && self.repository_path.is_some() {
+            let _ = self.git_handler.cleanup(self.repository_path.as_ref().unwrap());
+        }
+        
+        // Reset application state
+        self.repository_path = None;
+        self.directory_structure = None;
+        self.file_list.clear();
+        self.status_message = String::from("Ready");
+        self.is_cloning = false;
+        self.is_loading_tokens = false;
+        self.ui_handler.set_loading(false);
+    }
+    
+    /// Toggles dark mode
+    fn toggle_dark_mode(&mut self) {
+        let current_mode = self.ui_handler.is_dark_mode();
+        self.ui_handler.set_dark_mode(!current_mode);
     }
 }
 
@@ -677,9 +861,9 @@ mod tests {
     fn test_sorting() {
         // Create test file info entries
         let files = vec![
-            FileInfo { index: 0, path: PathBuf::from("a.txt"), tokens: 10 },
-            FileInfo { index: 1, path: PathBuf::from("b.txt"), tokens: 5 },
-            FileInfo { index: 2, path: PathBuf::from("c.txt"), tokens: 15 },
+            FileInfo { index: 0, path: PathBuf::from("a.txt"), tokens: 10, selected: false },
+            FileInfo { index: 1, path: PathBuf::from("b.txt"), tokens: 5, selected: false },
+            FileInfo { index: 2, path: PathBuf::from("c.txt"), tokens: 15, selected: false },
         ];
         
         // Test sorting by tokens ascending
