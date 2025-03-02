@@ -147,11 +147,12 @@ impl GitScrollApp {
     }
     
     /// Handles zoom in/out actions
-    /// 
+    ///
     /// # Arguments
     /// * `zoom_in` - Whether to zoom in (true) or out (false)
-    fn handle_zoom(&mut self, zoom_in: bool) {
-        self.visualizer.zoom(zoom_in);
+    /// * `visualization_rect` - The rectangle where visualization is rendered
+    fn handle_zoom(&mut self, zoom_in: bool, visualization_rect: egui::Rect) {
+        self.visualizer.zoom(zoom_in, visualization_rect);
     }
     
     /// Handles layout type change
@@ -403,23 +404,23 @@ impl eframe::App for GitScrollApp {
                 // Zoom controls
                 let (zoom_in, zoom_out) = self.ui_handler.render_zoom_controls(ui);
                 
+                // Define the visualization area
+                let visualization_rect = egui::Rect::from_min_size(
+                    ui.min_rect().min,
+                    egui::vec2(ui.available_width(), ui.available_height() - 20.0)
+                );
+                ui.allocate_rect(visualization_rect, egui::Sense::click_and_drag());
+                
                 if zoom_in {
-                    self.handle_zoom(true);
+                    self.handle_zoom(true, visualization_rect);
                 }
                 
                 if zoom_out {
-                    self.handle_zoom(false);
+                    self.handle_zoom(false, visualization_rect);
                 }
                 
-                // Visualization
-                let available_height = ui.available_height() - 20.0;
-                ui.allocate_rect(
-                    egui::Rect::from_min_size(
-                        ui.min_rect().min,
-                        egui::vec2(ui.available_width(), available_height)
-                    ),
-                    egui::Sense::click_and_drag()
-                );
+                // Generate squares with the current visualization rectangle
+                self.visualizer.generate_squares(visualization_rect);
                 
                 // Handle mouse interaction
                 let pointer_pos = ctx.pointer_hover_pos();
@@ -433,8 +434,8 @@ impl eframe::App for GitScrollApp {
                     .as_secs_f64();
                 self.visualizer.update_animation(now);
                 
-                // Render visualization
-                self.visualizer.render(ui);
+                // Render visualization with the visualization rectangle
+                self.visualizer.render(ui, visualization_rect);
             }
         });
     }

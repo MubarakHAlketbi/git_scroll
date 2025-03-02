@@ -194,26 +194,28 @@ impl Visualizer {
     pub fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
     }
-    
     /// Generates visual squares from the directory structure
-    fn generate_squares(&mut self) {
+    ///
+    /// # Arguments
+    /// * `visualization_rect` - The rectangle where visualization will be rendered
+    fn generate_squares(&mut self, visualization_rect: egui::Rect) {
         self.squares.clear();
         self.selected_index = None;
         self.hovered_index = None;  // Reset hovered_index to prevent stale indices
         
         if let Some(root) = &self.root_entry {
-            // Calculate the available canvas size
-            // For now, we'll use a fixed size, but this could be made dynamic
-            let canvas_width: f32 = 800.0;
-            let canvas_height: f32 = 600.0;
+            // Use the actual available canvas size from the visualization_rect
+            let canvas_width: f32 = visualization_rect.width();
+            let canvas_height: f32 = visualization_rect.height();
             
             // Clone the root to avoid borrowing issues
             let root_clone = root.clone();
             
-            // Check if we have a cached layout for this path and zoom level
-            let cache_key = format!("{}_{}_{:?}", 
-                root_clone.path.to_string_lossy(), 
+            // Check if we have a cached layout for this path, zoom level, and canvas size
+            let cache_key = format!("{}_{}_{}_{:?}",
+                root_clone.path.to_string_lossy(),
                 self.zoom_factor,
+                canvas_width.to_string() + "x" + &canvas_height.to_string(),
                 self.layout_type
             );
             
@@ -241,6 +243,7 @@ impl Visualizer {
             
             // Cache the generated layout
             self.layout_cache.insert(cache_key, self.squares.clone());
+        }
         }
     }
     
@@ -949,9 +952,8 @@ impl Visualizer {
     ///
     /// # Arguments
     /// * `ui` - The egui UI to render to
-    pub fn render(&self, ui: &mut egui::Ui) {
-        let canvas_rect = ui.available_rect_before_wrap();
-        
+    /// * `visualization_rect` - The rectangle where visualization should be rendered
+    pub fn render(&self, ui: &mut egui::Ui, visualization_rect: egui::Rect) {
         // Draw the canvas background
         let bg_color = match self.theme {
             Theme::Light => egui::Color32::from_rgb(240, 240, 240),
@@ -960,7 +962,7 @@ impl Visualizer {
         };
         
         ui.painter().rect_filled(
-            canvas_rect,
+            visualization_rect,
             0.0,
             bg_color,
         );
@@ -1022,94 +1024,103 @@ impl Visualizer {
                 square.rect
             };
             
-            // Draw the square with appropriate style
-            ui.painter().rect_filled(
-                draw_rect,
-                egui::CornerRadius::same(corner_radius),
-                fill_color,
+            // Translate the rectangle to the visualization_rect's coordinate system
+            let adjusted_rect = egui::Rect::from_min_max(
+                visualization_rect.min + draw_rect.min.to_vec2(),
+                visualization_rect.min + draw_rect.max.to_vec2()
             );
             
-            // Draw the border with appropriate style
-            let border_color = if square.selected {
-                egui::Color32::WHITE
-            } else if square.hovered {
-                // Add glow effect for hovered squares
-                egui::Color32::from_rgb(255, 255, 0) // Yellow glow
-            } else {
-                match self.theme {
-                    Theme::Light => egui::Color32::from_rgb(50, 50, 50),
-                    Theme::Dark => egui::Color32::from_rgb(150, 150, 150),
-                    Theme::Custom(ref colors) => *colors.get("border").unwrap_or(&egui::Color32::from_rgb(50, 50, 50)),
-                }
-            };
-            
-            // Draw border with appropriate stroke
-            let stroke_width = if square.hovered { 2.0 } else { 1.0 };
-            ui.painter().rect_stroke(
-                draw_rect,
-                egui::CornerRadius::same(corner_radius),
-                egui::Stroke::new(stroke_width, border_color),
-                egui::epaint::StrokeKind::Middle,
-            );
-            
-            // Draw the name with appropriate style
-            let text_color = if square.entry.is_directory {
-                match self.theme {
-                    Theme::Light => egui::Color32::WHITE,
-                    Theme::Dark => egui::Color32::WHITE,
-                    Theme::Custom(ref colors) => *colors.get("directory_text").unwrap_or(&egui::Color32::WHITE),
-                }
-            } else {
-                // Darker text for files to ensure readability
-                match self.theme {
-                    Theme::Light => egui::Color32::from_rgb(20, 20, 20),
-                    Theme::Dark => egui::Color32::from_rgb(220, 220, 220),
-                    Theme::Custom(ref colors) => *colors.get("file_text").unwrap_or(&egui::Color32::from_rgb(20, 20, 20)),
-                }
-            };
-            
-            // Adjust text size based on square size (using the animated rectangle)
-            let font_size = if draw_rect.width() > 60.0 {
-                14.0
-            } else if draw_rect.width() > 40.0 {
-                12.0
-            } else {
-                10.0
-            };
-            
-            // Draw name and size information if there's enough space
-            if draw_rect.width() > 20.0 && draw_rect.height() > 20.0 {
-                // Prepare the display text with name and size information
-                let name = &square.entry.name;
-                let size_info = if square.entry.is_directory {
-                    format!("{} items", square.entry.children.len())
-                } else {
-                    if let Ok(metadata) = std::fs::metadata(&square.entry.path) {
-                        format!("{} KB", metadata.len() / 1024)
-                    } else {
-                        "Unknown size".to_string()
-                    }
-                };
-                
-                // For smaller squares, show just the name with truncation if needed
-                let display_text = if draw_rect.width() < 80.0 {
-                    if name.len() > 10 {
-                        format!("{}...", &name[0..7])
-                    } else {
-                        name.clone()
-                    }
-                } else {
-                    // For larger squares, show name and size information
-                    format!("{}\n{}", name, size_info)
-                };
-                
-                ui.painter().text(
-                    draw_rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    &display_text,
-                    egui::FontId::proportional(font_size),
-                    text_color,
+            // Only render if the square is visible within the visualization area
+            if adjusted_rect.intersects(visualization_rect) {
+                // Draw the square with appropriate style
+                ui.painter().rect_filled(
+                    adjusted_rect,
+                    egui::CornerRadius::same(corner_radius),
+                    fill_color,
                 );
+                
+                // Draw the border with appropriate style
+                let border_color = if square.selected {
+                    egui::Color32::WHITE
+                } else if square.hovered {
+                    // Add glow effect for hovered squares
+                    egui::Color32::from_rgb(255, 255, 0) // Yellow glow
+                } else {
+                    match self.theme {
+                        Theme::Light => egui::Color32::from_rgb(50, 50, 50),
+                        Theme::Dark => egui::Color32::from_rgb(150, 150, 150),
+                        Theme::Custom(ref colors) => *colors.get("border").unwrap_or(&egui::Color32::from_rgb(50, 50, 50)),
+                    }
+                };
+                
+                // Draw border with appropriate stroke
+                let stroke_width = if square.hovered { 2.0 } else { 1.0 };
+                ui.painter().rect_stroke(
+                    adjusted_rect,
+                    egui::CornerRadius::same(corner_radius),
+                    egui::Stroke::new(stroke_width, border_color),
+                    egui::epaint::StrokeKind::Middle,
+                );
+            
+                // Draw the name with appropriate style
+                let text_color = if square.entry.is_directory {
+                    match self.theme {
+                        Theme::Light => egui::Color32::WHITE,
+                        Theme::Dark => egui::Color32::WHITE,
+                        Theme::Custom(ref colors) => *colors.get("directory_text").unwrap_or(&egui::Color32::WHITE),
+                    }
+                } else {
+                    // Darker text for files to ensure readability
+                    match self.theme {
+                        Theme::Light => egui::Color32::from_rgb(20, 20, 20),
+                        Theme::Dark => egui::Color32::from_rgb(220, 220, 220),
+                        Theme::Custom(ref colors) => *colors.get("file_text").unwrap_or(&egui::Color32::from_rgb(20, 20, 20)),
+                    }
+                };
+                
+                // Adjust text size based on square size (using the animated rectangle)
+                let font_size = if adjusted_rect.width() > 60.0 {
+                    14.0
+                } else if adjusted_rect.width() > 40.0 {
+                    12.0
+                } else {
+                    10.0
+                };
+                
+                // Draw name and size information if there's enough space
+                if adjusted_rect.width() > 20.0 && adjusted_rect.height() > 20.0 {
+                    // Prepare the display text with name and size information
+                    let name = &square.entry.name;
+                    let size_info = if square.entry.is_directory {
+                        format!("{} items", square.entry.children.len())
+                    } else {
+                        if let Ok(metadata) = std::fs::metadata(&square.entry.path) {
+                            format!("{} KB", metadata.len() / 1024)
+                        } else {
+                            "Unknown size".to_string()
+                        }
+                    };
+                    
+                    // For smaller squares, show just the name with truncation if needed
+                    let display_text = if adjusted_rect.width() < 80.0 {
+                        if name.len() > 10 {
+                            format!("{}...", &name[0..7])
+                        } else {
+                            name.clone()
+                        }
+                    } else {
+                        // For larger squares, show name and size information
+                        format!("{}\n{}", name, size_info)
+                    };
+                    
+                    ui.painter().text(
+                        adjusted_rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        &display_text,
+                        egui::FontId::proportional(font_size),
+                        text_color,
+                    );
+                }
             }
             
             // For directories at higher zoom levels, show additional info
@@ -1155,92 +1166,119 @@ impl Visualizer {
                 square.rect
             };
             
-            // Position tooltip below or to the right of the square depending on space
-            let tooltip_pos = if rect_for_tooltip.right() + 130.0 < canvas_rect.right() {
-                rect_for_tooltip.right_center() + egui::vec2(5.0, 0.0)
-            } else {
-                rect_for_tooltip.left_bottom() + egui::vec2(0.0, 5.0)
-            };
+            // Translate the rectangle to the visualization_rect's coordinate system
+            let adjusted_rect_for_tooltip = egui::Rect::from_min_max(
+                visualization_rect.min + rect_for_tooltip.min.to_vec2(),
+                visualization_rect.min + rect_for_tooltip.max.to_vec2()
+            );
             
-            // Calculate content detail level based on zoom factor
-            let content_detail = ((self.zoom_factor - 3.0) / 1.0).clamp(0.0, 1.0); // Fades in from 3.0 to 4.0
-            
-            // Create tooltip content based on entry type and zoom level
-            let mut tooltip_text = if square.entry.is_directory {
-                if content_detail > 0.5 && !square.entry.children.is_empty() {
-                    // At high zoom, show more details about directory contents
-                    let child_count = square.entry.children.len();
-                    let file_count = square.entry.children.iter().filter(|c| !c.is_directory).count();
-                    let dir_count = child_count - file_count;
-                    format!("{}\n{} items ({} files, {} dirs)",
-                            square.entry.name, child_count, file_count, dir_count)
+            // Only show tooltip if the square is visible
+            if adjusted_rect_for_tooltip.intersects(visualization_rect) {
+                // Position tooltip below or to the right of the square depending on space
+                let tooltip_pos = if adjusted_rect_for_tooltip.right() + 130.0 < visualization_rect.right() {
+                    adjusted_rect_for_tooltip.right_center() + egui::vec2(5.0, 0.0)
                 } else {
-                    format!("{}\n{} items", square.entry.name, square.entry.children.len())
-                }
-            } else {
-                // For files, show more details at higher zoom levels
-                if content_detail > 0.5 {
-                    // At high zoom, show file details like size if available
-                    if let Ok(metadata) = std::fs::metadata(&square.entry.path) {
-                        let size_kb = metadata.len() / 1024;
-                        format!("{}\nSize: {} KB", square.entry.name, size_kb)
+                    adjusted_rect_for_tooltip.left_bottom() + egui::vec2(0.0, 5.0)
+                };
+                
+                // Calculate content detail level based on zoom factor
+                let content_detail = ((self.zoom_factor - 3.0) / 1.0).clamp(0.0, 1.0); // Fades in from 3.0 to 4.0
+                
+                // Create tooltip content based on entry type and zoom level
+                let mut tooltip_text = if square.entry.is_directory {
+                    if content_detail > 0.5 && !square.entry.children.is_empty() {
+                        // At high zoom, show more details about directory contents
+                        let child_count = square.entry.children.len();
+                        let file_count = square.entry.children.iter().filter(|c| !c.is_directory).count();
+                        let dir_count = child_count - file_count;
+                        format!("{}\n{} items ({} files, {} dirs)",
+                                square.entry.name, child_count, file_count, dir_count)
+                    } else {
+                        format!("{}\n{} items", square.entry.name, square.entry.children.len())
+                    }
+                } else {
+                    // For files, show more details at higher zoom levels
+                    if content_detail > 0.5 {
+                        // At high zoom, show file details like size if available
+                        if let Ok(metadata) = std::fs::metadata(&square.entry.path) {
+                            let size_kb = metadata.len() / 1024;
+                            format!("{}\nSize: {} KB", square.entry.name, size_kb)
+                        } else {
+                            format!("{}", square.entry.name)
+                        }
                     } else {
                         format!("{}", square.entry.name)
                     }
-                } else {
-                    format!("{}", square.entry.name)
-                }
-            };
-            
-            // Add file content preview for files at high zoom levels
-            if content_detail > 0.5 && !square.entry.is_directory {
-                let path_str = square.entry.path.to_string_lossy().to_string();
+                };
                 
-                // Check if we have the content cached
-                if let Ok(cache) = self.file_content_cache.lock() {
-                    if let Some(content) = cache.get(&path_str) {
-                        tooltip_text = format!("{}\n\n{}", tooltip_text, content);
+                // Add file content preview for files at high zoom levels
+                if content_detail > 0.5 && !square.entry.is_directory {
+                    let path_str = square.entry.path.to_string_lossy().to_string();
+                    
+                    // Check if we have the content cached
+                    if let Ok(cache) = self.file_content_cache.lock() {
+                        if let Some(content) = cache.get(&path_str) {
+                            tooltip_text = format!("{}\n\n{}", tooltip_text, content);
+                        }
                     }
                 }
+                
+                // Calculate tooltip size based on content
+                let tooltip_width = tooltip_text.len().min(50) as f32 * 7.0;
+                let line_count = tooltip_text.matches('\n').count() + 1;
+                let tooltip_height = line_count as f32 * 20.0;
+                
+                // Ensure tooltip stays within visualization area
+                let tooltip_rect = egui::Rect::from_min_size(
+                    tooltip_pos,
+                    egui::vec2(tooltip_width, tooltip_height),
+                );
+                
+                // Adjust tooltip position if it would go outside visualization area
+                let adjusted_tooltip_rect = if tooltip_rect.right() > visualization_rect.right() {
+                    let offset = tooltip_rect.right() - visualization_rect.right() + 5.0;
+                    egui::Rect::from_min_size(
+                        egui::pos2(tooltip_rect.min.x - offset, tooltip_rect.min.y),
+                        tooltip_rect.size()
+                    )
+                } else if tooltip_rect.bottom() > visualization_rect.bottom() {
+                    let offset = tooltip_rect.bottom() - visualization_rect.bottom() + 5.0;
+                    egui::Rect::from_min_size(
+                        egui::pos2(tooltip_rect.min.x, tooltip_rect.min.y - offset),
+                        tooltip_rect.size()
+                    )
+                } else {
+                    tooltip_rect
+                };
+                
+                // Draw tooltip background
+                let tooltip_bg_color = match self.theme {
+                    Theme::Light => egui::Color32::from_rgb(50, 50, 50),
+                    Theme::Dark => egui::Color32::from_rgb(70, 70, 70),
+                    Theme::Custom(ref colors) => *colors.get("tooltip_bg").unwrap_or(&egui::Color32::from_rgb(50, 50, 50)),
+                };
+                
+                ui.painter().rect_filled(
+                    adjusted_tooltip_rect,
+                    egui::CornerRadius::same(2),
+                    tooltip_bg_color,
+                );
+                
+                // Draw tooltip text
+                let tooltip_text_color = match self.theme {
+                    Theme::Light => egui::Color32::WHITE,
+                    Theme::Dark => egui::Color32::WHITE,
+                    Theme::Custom(ref colors) => *colors.get("tooltip_text").unwrap_or(&egui::Color32::WHITE),
+                };
+                
+                ui.painter().text(
+                    adjusted_tooltip_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    &tooltip_text,
+                    egui::FontId::proportional(12.0),
+                    tooltip_text_color,
+                );
             }
-            
-            // Calculate tooltip size based on content
-            let tooltip_width = tooltip_text.len().min(50) as f32 * 7.0;
-            let line_count = tooltip_text.matches('\n').count() + 1;
-            let tooltip_height = line_count as f32 * 20.0;
-            
-            let tooltip_rect = egui::Rect::from_min_size(
-                tooltip_pos,
-                egui::vec2(tooltip_width, tooltip_height),
-            );
-            
-            // Draw tooltip background
-            let tooltip_bg_color = match self.theme {
-                Theme::Light => egui::Color32::from_rgb(50, 50, 50),
-                Theme::Dark => egui::Color32::from_rgb(70, 70, 70),
-                Theme::Custom(ref colors) => *colors.get("tooltip_bg").unwrap_or(&egui::Color32::from_rgb(50, 50, 50)),
-            };
-            
-            ui.painter().rect_filled(
-                tooltip_rect,
-                egui::CornerRadius::same(2),
-                tooltip_bg_color,
-            );
-            
-            // Draw tooltip text
-            let tooltip_text_color = match self.theme {
-                Theme::Light => egui::Color32::WHITE,
-                Theme::Dark => egui::Color32::WHITE,
-                Theme::Custom(ref colors) => *colors.get("tooltip_text").unwrap_or(&egui::Color32::WHITE),
-            };
-            
-            ui.painter().text(
-                tooltip_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                &tooltip_text,
-                egui::FontId::proportional(12.0),
-                tooltip_text_color,
-            );
         }
     }
     
@@ -1321,7 +1359,8 @@ impl Visualizer {
     ///
     /// # Arguments
     /// * `zoom_in` - Whether to zoom in (true) or out (false)
-    pub fn zoom(&mut self, zoom_in: bool) {
+    /// * `visualization_rect` - The rectangle where visualization is rendered
+    pub fn zoom(&mut self, zoom_in: bool, visualization_rect: egui::Rect) {
         // Calculate the new target zoom factor with fine-grained control
         let zoom_step: f32 = 0.2; // Slightly larger increments for more noticeable zooming
         let new_target = if zoom_in {
@@ -1337,9 +1376,13 @@ impl Visualizer {
         
         // Clear layout cache to force regeneration with new zoom level
         if let Some(root) = &self.root_entry {
-            let cache_key = format!("{}_{}_{:?}",
+            let canvas_width = visualization_rect.width();
+            let canvas_height = visualization_rect.height();
+            
+            let cache_key = format!("{}_{}_{}_{:?}",
                 root.path.to_string_lossy(),
                 new_target,  // Use new_target instead of current zoom_factor
+                canvas_width.to_string() + "x" + &canvas_height.to_string(),
                 self.layout_type
             );
             self.layout_cache.remove(&cache_key);
@@ -1361,9 +1404,9 @@ impl Visualizer {
             .as_secs_f64();
         
         // Regenerate the visualization based on the new zoom factor
-        if let Some(root) = &self.root_entry {
+        if let Some(_) = &self.root_entry {
             // Use generate_squares instead of set_root_entry to avoid clearing the cache
-            self.generate_squares();
+            self.generate_squares(visualization_rect);
         }
     }
     
