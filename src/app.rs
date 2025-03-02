@@ -83,10 +83,12 @@ pub struct GitScrollApp {
     file_list: Vec<FileInfo>,
     sort_column: SortColumn,
     sort_direction: SortDirection,
+    is_loading_tokens: bool,
     
     // Background processing channels
     clone_receiver: mpsc::Receiver<Result<PathBuf, String>>,
     parse_receiver: mpsc::Receiver<Result<DirectoryEntry, String>>,
+    token_receiver: mpsc::Receiver<(usize, PathBuf, usize)>,
 }
 
 impl GitScrollApp {
@@ -97,6 +99,7 @@ impl GitScrollApp {
         // Create channels for background processing
         let (_clone_sender, clone_receiver) = mpsc::channel();
         let (_parse_sender, parse_receiver) = mpsc::channel();
+        let (_token_sender, token_receiver) = mpsc::channel();
         
         // Initialize with default values
         Self {
@@ -123,10 +126,12 @@ impl GitScrollApp {
             file_list: Vec::new(),
             sort_column: SortColumn::Index,
             sort_direction: SortDirection::Ascending,
+            is_loading_tokens: false,
             
             // Background processing channels
             clone_receiver,
             parse_receiver,
+            token_receiver,
         }
     }
     
@@ -233,7 +238,7 @@ impl GitScrollApp {
     }
     
     /// Handles filter pattern change
-    /// 
+    ///
     /// # Arguments
     /// * `pattern` - The new filter pattern
     fn handle_filter_change(&mut self, pattern: String) {
@@ -248,7 +253,10 @@ impl GitScrollApp {
                 if let Some(repo_path) = &self.repository_path {
                     if let Ok(root_entry) = self.directory_parser.parse_directory(repo_path) {
                         self.directory_structure = Some(root_entry.clone());
-                        self.visualizer.set_root_entry(root_entry);
+                        self.visualizer.set_root_entry(root_entry.clone());
+                        
+                        // Refresh the file list with updated filters
+                        self.populate_file_list(&root_entry);
                     }
                 }
             }
@@ -359,19 +367,59 @@ impl GitScrollApp {
 }
 
 impl GitScrollApp {
+    /// Shows an error dialog with the given message
+    ///
+    /// # Arguments
+    /// * `ctx` - The egui context
+    /// * `error_message` - The error message to display
+    fn show_error_dialog(&self, ctx: &egui::Context, error_message: &str) {
+        egui::Window::new("Error")
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(error_message);
+                if ui.button("OK").clicked() {
+                    // Dialog will close automatically when button is clicked
+                }
+            });
+    }
+
     /// Populates the file list from the directory structure
     fn populate_file_list(&mut self, root_entry: &DirectoryEntry) {
         self.file_list.clear();
         let files = self.directory_parser.get_all_files(root_entry);
-        for (index, path) in files.into_iter().enumerate() {
-            let tokens = count_tokens(&path);
+        
+        if files.is_empty() {
+            return; // No files to process
+        }
+        
+        // Create a new channel for this operation
+        let (token_sender, token_receiver) = mpsc::channel();
+        self.token_receiver = token_receiver;
+        self.is_loading_tokens = true;
+        
+        // Create a placeholder for each file with 0 tokens initially
+        for (index, path) in files.iter().enumerate() {
             self.file_list.push(FileInfo {
                 index,
-                path,
-                tokens,
+                path: path.clone(),
+                tokens: 0, // Will be updated asynchronously
             });
         }
-        self.sort_file_list(); // Initial sort
+        
+        // Spawn threads to count tokens for each file
+        for (index, path) in files.into_iter().enumerate() {
+            let sender = token_sender.clone();
+            let path_clone = path.clone();
+            
+            thread::spawn(move || {
+                let tokens = count_tokens(&path_clone);
+                let _ = sender.send((index, path_clone, tokens));
+            });
+        }
+        
+        // Initial sort (will be updated as tokens are counted)
+        self.sort_file_list();
     }
 
     /// Sorts the file list based on current sort settings
@@ -407,7 +455,10 @@ impl GitScrollApp {
     }
 
     /// Checks for results from background operations
-    fn check_background_operations(&mut self) {
+    ///
+    /// # Arguments
+    /// * `ctx` - The egui context
+    fn check_background_operations(&mut self, ctx: &egui::Context) {
         // Check for clone results
         if let Ok(repo_path_result) = self.clone_receiver.try_recv() {
             match repo_path_result {
@@ -416,9 +467,13 @@ impl GitScrollApp {
                     self.status_message = String::from("Repository cloned successfully, parsing directory...");
                 },
                 Err(e) => {
-                    self.status_message = format!("Failed to clone repository: {}", e);
+                    let error_message = format!("Failed to clone repository: {}", e);
+                    self.status_message = error_message.clone();
                     self.is_cloning = false;
                     self.ui_handler.set_loading(false);
+                    
+                    // Show error dialog for critical errors
+                    self.show_error_dialog(ctx, &error_message);
                 }
             }
         }
@@ -443,7 +498,8 @@ impl GitScrollApp {
                 },
                 Err(e) => {
                     // Failed to parse directory
-                    self.status_message = format!("Failed to parse repository: {}", e);
+                    let error_message = format!("Failed to parse repository: {}", e);
+                    self.status_message = error_message.clone();
                     
                     // Clean up the repository if not keeping it
                     if !self.keep_repository && self.repository_path.is_some() {
@@ -452,7 +508,49 @@ impl GitScrollApp {
                     
                     self.is_cloning = false;
                     self.ui_handler.set_loading(false);
+                    
+                    // Show error dialog for critical errors
+                    self.show_error_dialog(ctx, &error_message);
                 }
+            }
+        }
+        
+        // Check for token counting results
+        if self.is_loading_tokens {
+            let mut received_count = 0;
+            let mut all_received = false;
+            
+            // Try to receive as many token results as possible without blocking
+            while let Ok((index, path, tokens)) = self.token_receiver.try_recv() {
+                received_count += 1;
+                
+                // Update the token count for the file at the given index
+                if index < self.file_list.len() {
+                    // Find the file with the matching index and path
+                    for file in &mut self.file_list {
+                        if file.index == index && file.path == path {
+                            file.tokens = tokens;
+                            break;
+                        }
+                    }
+                }
+                
+                // Check if we've received all results (assuming file_list is populated)
+                if received_count >= self.file_list.len() {
+                    all_received = true;
+                    break;
+                }
+            }
+            
+            // If we received any results, resort the list
+            if received_count > 0 {
+                self.sort_file_list();
+            }
+            
+            // If all results are received, update the loading state
+            if all_received {
+                self.is_loading_tokens = false;
+                self.status_message = String::from("Token counting completed");
             }
         }
     }
@@ -469,7 +567,7 @@ impl eframe::App for GitScrollApp {
         crate::ui::style::apply_style(ctx);
         
         // Check for results from background operations
-        self.check_background_operations();
+        self.check_background_operations(ctx);
         
         // Left panel for settings
         egui::SidePanel::left("settings_panel")
@@ -520,7 +618,14 @@ impl eframe::App for GitScrollApp {
             if self.directory_structure.is_none() {
                 self.ui_handler.render_empty_state(ui);
             } else {
-                ui.heading("File List");
+                // Show file list heading with loading indicator if needed
+                ui.horizontal(|ui| {
+                    ui.heading("File List");
+                    if self.is_loading_tokens {
+                        ui.spinner();
+                        ui.label("Counting tokens...");
+                    }
+                });
 
                 let text_style = egui::TextStyle::Body;
                 let row_height = ui.text_style_height(&text_style);
@@ -666,5 +771,63 @@ mod tests {
         app.sort_file_list();
         assert_eq!(app.file_list[0].path.file_name().unwrap().to_str().unwrap(), "a.txt");
         assert_eq!(app.file_list[2].path.file_name().unwrap().to_str().unwrap(), "c.txt");
+    }
+    
+    #[test]
+    fn test_empty_repository() {
+        // Create a temporary directory for testing
+        let temp_dir = std::env::temp_dir().join("test_empty_repo");
+        if temp_dir.exists() {
+            std::fs::remove_dir_all(&temp_dir).unwrap();
+        }
+        std::fs::create_dir(&temp_dir).unwrap();
+        
+        // Create a DirectoryEntry for the empty directory
+        let root_entry = DirectoryEntry {
+            name: "empty".to_string(),
+            path: temp_dir.clone(),
+            is_directory: true,
+            children: vec![],
+        };
+        
+        // Test populating file list with empty repository
+        let mut app = GitScrollApp::new();
+        app.populate_file_list(&root_entry);
+        
+        // Verify that the file list is empty
+        assert!(app.file_list.is_empty());
+        
+        // Clean up
+        std::fs::remove_dir(temp_dir).unwrap();
+    }
+    
+    #[test]
+    fn test_file_with_no_tokens() {
+        // Create a temporary file with no content
+        let temp_file = std::env::temp_dir().join("empty_file.txt");
+        fs::write(&temp_file, "").unwrap();
+        
+        // Create a DirectoryEntry for the file
+        let file_entry = DirectoryEntry {
+            name: "empty_file.txt".to_string(),
+            path: temp_file.clone(),
+            is_directory: false,
+            children: vec![],
+        };
+        
+        // Create a parent directory entry
+        let root_entry = DirectoryEntry {
+            name: "root".to_string(),
+            path: temp_file.parent().unwrap().to_path_buf(),
+            is_directory: true,
+            children: vec![file_entry],
+        };
+        
+        // Test token counting for empty file
+        let count = count_tokens(&temp_file);
+        assert_eq!(count, 0);
+        
+        // Clean up
+        fs::remove_file(temp_file).unwrap();
     }
 }

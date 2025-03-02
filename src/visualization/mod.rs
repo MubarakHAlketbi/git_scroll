@@ -244,7 +244,6 @@ impl Visualizer {
             // Cache the generated layout
             self.layout_cache.insert(cache_key, self.squares.clone());
         }
-        }
     }
     
     /// Generates a grid layout for directories
@@ -1474,28 +1473,34 @@ mod tests {
     fn test_zoom_factors() {
         let mut visualizer = Visualizer::new();
         
+        // Create a dummy visualization rect for testing
+        let visualization_rect = egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(800.0, 600.0)
+        );
+        
         // Start at minimum zoom (1.0)
         assert_eq!(visualizer.zoom_factor, 1.0);
         
         // Zoom in once
-        visualizer.zoom(true);
+        visualizer.zoom(true, visualization_rect);
         assert!(visualizer.target_zoom_factor > 1.0);
         
         // Zoom in several times to reach maximum
         for _ in 0..30 {
-            visualizer.zoom(true);
+            visualizer.zoom(true, visualization_rect);
         }
         
         // Should be capped at maximum (4.0)
         assert_eq!(visualizer.target_zoom_factor, 4.0);
         
         // Zoom out once
-        visualizer.zoom(false);
+        visualizer.zoom(false, visualization_rect);
         assert!(visualizer.target_zoom_factor < 4.0);
         
         // Zoom out several times to reach minimum
         for _ in 0..30 {
-            visualizer.zoom(false);
+            visualizer.zoom(false, visualization_rect);
         }
         
         // Should be capped at minimum (1.0)
