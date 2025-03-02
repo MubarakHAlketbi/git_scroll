@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::git::GitHandler;
 use crate::directory::{DirectoryParser, DirectoryEntry};
-use crate::visualization::Visualizer;
+use crate::visualization::{Visualizer, LayoutType, Theme};
 use crate::ui::UiHandler;
 
 /// Main application state for Git Scroll
@@ -25,6 +25,12 @@ pub struct GitScrollApp {
     directory_parser: DirectoryParser,
     visualizer: Visualizer,
     ui_handler: UiHandler,
+    
+    // UI state
+    show_stats_panel: bool,
+    current_layout: LayoutType,
+    current_theme: Theme,
+    filter_pattern: String,
 }
 
 impl GitScrollApp {
@@ -46,6 +52,12 @@ impl GitScrollApp {
             directory_parser: DirectoryParser::new(),
             visualizer: Visualizer::new(),
             ui_handler: UiHandler::new(),
+            
+            // UI state
+            show_stats_panel: true,
+            current_layout: LayoutType::Grid,
+            current_theme: Theme::Light,
+            filter_pattern: String::new(),
         }
     }
     
@@ -142,6 +154,137 @@ impl GitScrollApp {
     fn handle_zoom(&mut self, zoom_in: bool) {
         self.visualizer.zoom(zoom_in);
     }
+    
+    /// Handles layout type change
+    /// 
+    /// # Arguments
+    /// * `layout_type` - The new layout type
+    fn handle_layout_change(&mut self, layout_type: LayoutType) {
+        if self.current_layout != layout_type {
+            self.current_layout = layout_type;
+            self.visualizer.set_layout_type(layout_type);
+        }
+    }
+    
+    /// Handles theme change
+    /// 
+    /// # Arguments
+    /// * `theme` - The new theme
+    fn handle_theme_change(&mut self, theme: Theme) {
+        if self.current_theme != theme {
+            self.current_theme = theme;
+            self.visualizer.set_theme(theme);
+        }
+    }
+    
+    /// Handles filter pattern change
+    /// 
+    /// # Arguments
+    /// * `pattern` - The new filter pattern
+    fn handle_filter_change(&mut self, pattern: String) {
+        if self.filter_pattern != pattern {
+            self.filter_pattern = pattern.clone();
+            
+            // Update directory parser with the new filter
+            if !pattern.is_empty() {
+                self.directory_parser.add_ignore_pattern(pattern);
+                
+                // Re-parse the directory structure if we have a repository
+                if let Some(repo_path) = &self.repository_path {
+                    if let Ok(root_entry) = self.directory_parser.parse_directory(repo_path) {
+                        self.directory_structure = Some(root_entry.clone());
+                        self.visualizer.set_root_entry(root_entry);
+                    }
+                }
+            }
+        }
+    }
+    
+    /// Renders the statistics panel
+    /// 
+    /// # Arguments
+    /// * `ui` - The egui UI to render to
+    fn render_stats_panel(&self, ui: &mut egui::Ui) {
+        ui.heading("Repository Statistics");
+        ui.add_space(10.0);
+        
+        if let Some(stats) = self.visualizer.directory_stats.as_ref() {
+            ui.label(format!("Total Files: {}", stats.total_files));
+            ui.label(format!("Total Directories: {}", stats.total_directories));
+            ui.label(format!("Total Size: {} KB", stats.total_size_bytes / 1024));
+            ui.label(format!("Max Depth: {}", stats.max_depth));
+            
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+            
+            ui.heading("File Types");
+            ui.add_space(5.0);
+            
+            // Sort file types by count
+            let mut file_types: Vec<(&String, &usize)> = stats.file_types.iter().collect();
+            file_types.sort_by(|a, b| b.1.cmp(a.1));
+            
+            // Display top file types
+            for (ext, count) in file_types.iter().take(10) {
+                ui.label(format!("{}: {}", ext, count));
+            }
+        } else {
+            ui.label("No statistics available");
+        }
+    }
+    
+    /// Renders the settings panel
+    /// 
+    /// # Arguments
+    /// * `ui` - The egui UI to render to
+    fn render_settings_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Visualization Settings");
+        ui.add_space(10.0);
+        
+        // Layout selection
+        ui.label("Layout:");
+        ui.horizontal(|ui| {
+            if ui.radio_value(&mut self.current_layout, LayoutType::Grid, "Grid").clicked() {
+                self.handle_layout_change(LayoutType::Grid);
+            }
+            if ui.radio_value(&mut self.current_layout, LayoutType::Treemap, "Treemap").clicked() {
+                self.handle_layout_change(LayoutType::Treemap);
+            }
+            if ui.radio_value(&mut self.current_layout, LayoutType::ForceDirected, "Force-Directed").clicked() {
+                self.handle_layout_change(LayoutType::ForceDirected);
+            }
+            if ui.radio_value(&mut self.current_layout, LayoutType::Detailed, "Detailed").clicked() {
+                self.handle_layout_change(LayoutType::Detailed);
+            }
+        });
+        
+        ui.add_space(10.0);
+        
+        // Theme selection
+        ui.label("Theme:");
+        ui.horizontal(|ui| {
+            if ui.radio_value(&mut self.current_theme, Theme::Light, "Light").clicked() {
+                self.handle_theme_change(Theme::Light);
+            }
+            if ui.radio_value(&mut self.current_theme, Theme::Dark, "Dark").clicked() {
+                self.handle_theme_change(Theme::Dark);
+            }
+        });
+        
+        ui.add_space(10.0);
+        
+        // Filter pattern
+        ui.label("Filter Pattern:");
+        let mut pattern = self.filter_pattern.clone();
+        if ui.text_edit_singleline(&mut pattern).changed() {
+            self.handle_filter_change(pattern);
+        }
+        
+        if ui.button("Apply Filter").clicked() {
+            self.handle_filter_change(self.filter_pattern.clone());
+        }
+    }
 }
 
 impl eframe::App for GitScrollApp {
@@ -154,6 +297,25 @@ impl eframe::App for GitScrollApp {
         // Apply custom styling
         crate::ui::style::apply_style(ctx);
         
+        // Left panel for settings
+        egui::SidePanel::left("settings_panel")
+            .resizable(true)
+            .default_width(200.0)
+            .show(ctx, |ui| {
+                self.render_settings_panel(ui);
+            });
+        
+        // Right panel for statistics (if enabled)
+        if self.show_stats_panel && self.directory_structure.is_some() {
+            egui::SidePanel::right("stats_panel")
+                .resizable(true)
+                .default_width(200.0)
+                .show(ctx, |ui| {
+                    self.render_stats_panel(ui);
+                });
+        }
+        
+        // Main central panel
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Git Scroll");
             
@@ -170,6 +332,11 @@ impl eframe::App for GitScrollApp {
             
             // Status message
             self.ui_handler.render_status_bar(ui, &self.status_message);
+            
+            // Toggle for stats panel
+            if self.directory_structure.is_some() {
+                ui.checkbox(&mut self.show_stats_panel, "Show Statistics");
+            }
             
             // Main content area
             ui.add_space(10.0);

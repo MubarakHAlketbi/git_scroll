@@ -111,23 +111,6 @@ impl UiHandler {
         self.is_loading = loading;
     }
     
-    /// Renders a tooltip for a UI element
-    ///
-    /// # Arguments
-    /// * `ui` - The egui UI to render to
-    /// * `text` - The tooltip text
-    /// * `pos` - The position to show the tooltip at
-    ///
-    /// Note: This method is currently commented out as the API has changed in egui 0.31.0
-    /// Use custom tooltip rendering with painter() instead
-    /*
-    pub fn render_tooltip(&self, ui: &mut egui::Ui, text: &str, pos: egui::Pos2) {
-        ui.ctx().show_tooltip(|ui| {
-            ui.label(text);
-        });
-    }
-    */
-    
     /// Renders zoom controls
     /// 
     /// # Arguments
@@ -153,6 +136,141 @@ impl UiHandler {
         
         (zoom_in_clicked, zoom_out_clicked)
     }
+    
+    /// Renders a dropdown for layout selection
+    /// 
+    /// # Arguments
+    /// * `ui` - The egui UI to render to
+    /// * `current_layout` - The current layout type
+    /// 
+    /// # Returns
+    /// * `Option<crate::visualization::LayoutType>` - The selected layout type, if changed
+    pub fn render_layout_dropdown(
+        &self,
+        ui: &mut egui::Ui,
+        current_layout: crate::visualization::LayoutType,
+    ) -> Option<crate::visualization::LayoutType> {
+        let mut selected_layout = current_layout;
+        let mut layout_changed = false;
+        
+        ui.horizontal(|ui| {
+            ui.label("Layout:");
+            
+            egui::ComboBox::from_id_source("layout_selector")
+                .selected_text(match current_layout {
+                    crate::visualization::LayoutType::Grid => "Grid",
+                    crate::visualization::LayoutType::Treemap => "Treemap",
+                    crate::visualization::LayoutType::ForceDirected => "Force-Directed",
+                    crate::visualization::LayoutType::Detailed => "Detailed",
+                })
+                .show_ui(ui, |ui| {
+                    layout_changed |= ui.selectable_value(
+                        &mut selected_layout, 
+                        crate::visualization::LayoutType::Grid, 
+                        "Grid"
+                    ).clicked();
+                    
+                    layout_changed |= ui.selectable_value(
+                        &mut selected_layout, 
+                        crate::visualization::LayoutType::Treemap, 
+                        "Treemap"
+                    ).clicked();
+                    
+                    layout_changed |= ui.selectable_value(
+                        &mut selected_layout, 
+                        crate::visualization::LayoutType::ForceDirected, 
+                        "Force-Directed"
+                    ).clicked();
+                    
+                    layout_changed |= ui.selectable_value(
+                        &mut selected_layout, 
+                        crate::visualization::LayoutType::Detailed, 
+                        "Detailed"
+                    ).clicked();
+                });
+        });
+        
+        if layout_changed {
+            Some(selected_layout)
+        } else {
+            None
+        }
+    }
+    
+    /// Renders a dropdown for theme selection
+    /// 
+    /// # Arguments
+    /// * `ui` - The egui UI to render to
+    /// * `current_theme` - The current theme
+    /// 
+    /// # Returns
+    /// * `Option<crate::visualization::Theme>` - The selected theme, if changed
+    pub fn render_theme_dropdown(
+        &self,
+        ui: &mut egui::Ui,
+        current_theme: &crate::visualization::Theme,
+    ) -> Option<crate::visualization::Theme> {
+        let mut theme_changed = false;
+        let mut selected_theme = current_theme.clone();
+        
+        ui.horizontal(|ui| {
+            ui.label("Theme:");
+            
+            egui::ComboBox::from_id_source("theme_selector")
+                .selected_text(match current_theme {
+                    crate::visualization::Theme::Light => "Light",
+                    crate::visualization::Theme::Dark => "Dark",
+                    crate::visualization::Theme::Custom(_) => "Custom",
+                })
+                .show_ui(ui, |ui| {
+                    theme_changed |= ui.selectable_value(
+                        &mut selected_theme, 
+                        crate::visualization::Theme::Light, 
+                        "Light"
+                    ).clicked();
+                    
+                    theme_changed |= ui.selectable_value(
+                        &mut selected_theme, 
+                        crate::visualization::Theme::Dark, 
+                        "Dark"
+                    ).clicked();
+                });
+        });
+        
+        if theme_changed {
+            Some(selected_theme)
+        } else {
+            None
+        }
+    }
+    
+    /// Renders a filter input field
+    /// 
+    /// # Arguments
+    /// * `ui` - The egui UI to render to
+    /// * `filter_pattern` - The current filter pattern
+    /// 
+    /// # Returns
+    /// * `Option<String>` - The new filter pattern, if changed
+    pub fn render_filter_input(
+        &self,
+        ui: &mut egui::Ui,
+        filter_pattern: &str,
+    ) -> Option<String> {
+        let mut pattern = filter_pattern.to_string();
+        let mut filter_changed = false;
+        
+        ui.horizontal(|ui| {
+            ui.label("Filter:");
+            filter_changed = ui.text_edit_singleline(&mut pattern).changed();
+        });
+        
+        if filter_changed {
+            Some(pattern)
+        } else {
+            None
+        }
+    }
 }
 
 /// Utility functions for UI styling
@@ -174,6 +292,28 @@ pub mod style {
         style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(220, 220, 220);
         style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(200, 200, 250);
         style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(180, 180, 250);
+        
+        // Apply the style
+        ctx.set_style(style);
+        ctx.set_fonts(fonts);
+    }
+    
+    /// Applies dark theme styling to the UI
+    /// 
+    /// # Arguments
+    /// * `ctx` - The egui context
+    pub fn apply_dark_style(ctx: &egui::Context) {
+        let mut style = (*ctx.style()).clone();
+        
+        // Customize fonts
+        let fonts = egui::FontDefinitions::default();
+        
+        // Customize colors for dark theme
+        style.visuals.dark_mode = true;
+        style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(40, 40, 40);
+        style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(60, 60, 60);
+        style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(80, 80, 120);
+        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(100, 100, 150);
         
         // Apply the style
         ctx.set_style(style);

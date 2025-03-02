@@ -2,6 +2,8 @@ use eframe::egui;
 use crate::directory::DirectoryEntry;
 use crate::directory::DirectoryStatistics;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::thread;
 
 /// Represents a visual square in the project area
 pub struct VisualSquare {
@@ -42,6 +44,23 @@ fn ease_in_out_quad(t: f32) -> f32 {
     }
 }
 
+/// Available layout types for visualization
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LayoutType {
+    Grid,
+    Treemap,
+    ForceDirected,
+    Detailed,
+}
+
+/// Theme options for visualization
+#[derive(Debug, Clone, PartialEq)]
+pub enum Theme {
+    Light,
+    Dark,
+    Custom(HashMap<String, egui::Color32>),
+}
+
 /// Handles visualization of the directory structure
 pub struct Visualizer {
     /// The root directory entry to visualize
@@ -72,10 +91,28 @@ pub struct Visualizer {
     animation_duration: f64,
     
     /// Directory statistics for size-based visualization
-    directory_stats: Option<DirectoryStatistics>,
+    pub directory_stats: Option<DirectoryStatistics>,
     
     /// Cache of colors for different file types
     file_type_colors: HashMap<String, egui::Color32>,
+    
+    /// Current layout type
+    layout_type: LayoutType,
+    
+    /// Current theme
+    theme: Theme,
+    
+    /// Dragging index for drag and drop
+    dragging_index: Option<usize>,
+    
+    /// Cache of layout calculations
+    layout_cache: HashMap<String, Vec<VisualSquare>>,
+    
+    /// File content cache for tooltips
+    file_content_cache: Arc<Mutex<HashMap<String, String>>>,
+    
+    /// Flag to indicate if file content is being loaded
+    loading_file_content: bool,
 }
 
 impl Visualizer {
@@ -96,6 +133,12 @@ impl Visualizer {
             animation_duration: 0.3, // 300ms animation duration
             directory_stats: None,
             file_type_colors: Self::initialize_file_colors(),
+            layout_type: LayoutType::Grid,
+            theme: Theme::Light,
+            dragging_index: None,
+            layout_cache: HashMap::new(),
+            file_content_cache: Arc::new(Mutex::new(HashMap::new())),
+            loading_file_content: false,
         }
     }
     
@@ -110,7 +153,44 @@ impl Visualizer {
         let parser = crate::directory::DirectoryParser::new();
         self.directory_stats = Some(parser.get_statistics(&entry));
         
+        // Clear layout cache when setting a new root entry
+        self.layout_cache.clear();
+        
         self.generate_squares();
+    }
+    
+    /// Sets the current layout type
+    ///
+    /// # Arguments
+    /// * `layout_type` - The layout type to use
+    pub fn set_layout_type(&mut self, layout_type: LayoutType) {
+        if self.layout_type != layout_type {
+            self.layout_type = layout_type;
+            
+            // Store the current state for animation
+            for square in &mut self.squares {
+                square.prev_rect = Some(square.rect);
+                square.animation_progress = 0.0;
+            }
+            
+            // Start animation
+            self.animating = true;
+            self.animation_start_time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            
+            // Regenerate squares with the new layout
+            self.generate_squares();
+        }
+    }
+    
+    /// Sets the current theme
+    ///
+    /// # Arguments
+    /// * `theme` - The theme to use
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
     }
     
     /// Generates visual squares from the directory structure
@@ -127,18 +207,37 @@ impl Visualizer {
             // Clone the root to avoid borrowing issues
             let root_clone = root.clone();
             
-            // Create the layout based on zoom factor
-            if self.zoom_factor < 2.0 {
-                // At lower zoom (1.0-2.0), use grid layout with increasing detail
-                let detail_level = ((self.zoom_factor - 1.0) * 10.0) as usize;
-                self.generate_grid_layout(&root_clone, canvas_width, canvas_height, detail_level);
-            } else if self.zoom_factor < 3.0 {
-                // At medium zoom (2.0-3.0), use treemap layout
-                self.generate_treemap_layout(&root_clone, canvas_width, canvas_height);
-            } else {
-                // At higher zoom (3.0-4.0), show detailed layout
-                self.generate_detailed_layout(&root_clone, canvas_width, canvas_height);
+            // Check if we have a cached layout for this path and zoom level
+            let cache_key = format!("{}_{}_{:?}", 
+                root_clone.path.to_string_lossy(), 
+                self.zoom_factor,
+                self.layout_type
+            );
+            
+            if let Some(cached_squares) = self.layout_cache.get(&cache_key) {
+                self.squares = cached_squares.clone();
+                return;
             }
+            
+            // Create the layout based on zoom factor and layout type
+            match self.layout_type {
+                LayoutType::Grid => {
+                    let detail_level = ((self.zoom_factor - 1.0) * 10.0) as usize;
+                    self.generate_grid_layout(&root_clone, canvas_width, canvas_height, detail_level);
+                },
+                LayoutType::Treemap => {
+                    self.generate_treemap_layout(&root_clone, canvas_width, canvas_height);
+                },
+                LayoutType::ForceDirected => {
+                    self.generate_force_directed_layout(&root_clone, canvas_width, canvas_height);
+                },
+                LayoutType::Detailed => {
+                    self.generate_detailed_layout(&root_clone, canvas_width, canvas_height);
+                }
+            }
+            
+            // Cache the generated layout
+            self.layout_cache.insert(cache_key, self.squares.clone());
         }
     }
     
@@ -287,6 +386,126 @@ impl Visualizer {
                 egui::vec2(width, height)
             )
         );
+    }
+    
+    /// Generates a force-directed layout for visualizing relationships
+    ///
+    /// # Arguments
+    /// * `entry` - The directory entry to visualize
+    /// * `width` - Available width
+    /// * `height` - Available height
+    fn generate_force_directed_layout(&mut self, entry: &DirectoryEntry, width: f32, height: f32) {
+        // Only process if this is a directory
+        if !entry.is_directory {
+            return;
+        }
+        
+        // Get all children (both directories and files)
+        let children = &entry.children;
+        
+        if children.is_empty() {
+            return;
+        }
+        
+        // Create initial positions in a circle
+        let center_x = width / 2.0;
+        let center_y = height / 2.0;
+        let radius = (width.min(height) / 2.0) * 0.8;
+        let child_count = children.len();
+        
+        // Create nodes with initial positions
+        let mut nodes = Vec::new();
+        for (i, child) in children.iter().enumerate() {
+            let angle = 2.0 * std::f32::consts::PI * (i as f32) / (child_count as f32);
+            let x = center_x + radius * angle.cos();
+            let y = center_y + radius * angle.sin();
+            
+            // Calculate node size based on file/directory size
+            let size = if child.is_directory {
+                // Directories are larger
+                let child_count = child.children.len();
+                (30.0 + (child_count as f32).sqrt() * 5.0).min(80.0)
+            } else {
+                // Files are smaller
+                if let Ok(metadata) = std::fs::metadata(&child.path) {
+                    let size_kb = metadata.len() / 1024;
+                    (20.0 + (size_kb as f32).sqrt() * 2.0).min(50.0)
+                } else {
+                    20.0 // Default size
+                }
+            };
+            
+            // Clone the entry to get an owned copy
+            let child_entry = child.clone();
+            
+            // Create the rectangle
+            let rect = egui::Rect::from_center_size(
+                egui::pos2(x, y),
+                egui::vec2(size, size),
+            );
+            
+            // Calculate size weight
+            let size_weight = if child.is_directory {
+                (child.children.len() as f32) / (child_count as f32)
+            } else {
+                1.0 / (child_count as f32)
+            };
+            
+            // Add the square
+            self.squares.push(VisualSquare {
+                entry: child_entry,
+                rect,
+                selected: false,
+                hovered: false,
+                size_weight,
+                animation_progress: 0.0,
+                prev_rect: None,
+            });
+        }
+        
+        // Apply force-directed algorithm (simplified Fruchterman-Reingold)
+        // In a real implementation, this would be iterative with multiple passes
+        let iterations = 50;
+        let k = (width * height / child_count as f32).sqrt() * 0.3; // Optimal distance
+        
+        for _ in 0..iterations {
+            // Calculate repulsive forces
+            for i in 0..self.squares.len() {
+                let mut force_x = 0.0;
+                let mut force_y = 0.0;
+                
+                for j in 0..self.squares.len() {
+                    if i != j {
+                        let dx = self.squares[i].rect.center().x - self.squares[j].rect.center().x;
+                        let dy = self.squares[i].rect.center().y - self.squares[j].rect.center().y;
+                        let distance = (dx * dx + dy * dy).sqrt().max(0.1);
+                        
+                        // Repulsive force
+                        let force = k * k / distance;
+                        force_x += dx / distance * force;
+                        force_y += dy / distance * force;
+                    }
+                }
+                
+                // Apply forces (with damping)
+                let damping = 0.1;
+                let new_x = self.squares[i].rect.center().x + force_x * damping;
+                let new_y = self.squares[i].rect.center().y + force_y * damping;
+                
+                // Keep within bounds
+                let size = self.squares[i].rect.size();
+                let half_width = size.x / 2.0;
+                let half_height = size.y / 2.0;
+                let bounded_x = new_x.clamp(half_width, width - half_width);
+                let bounded_y = new_y.clamp(half_height, height - half_height);
+                
+                // Update position
+                self.squares[i].rect = egui::Rect::from_center_size(
+                    egui::pos2(bounded_x, bounded_y),
+                    size,
+                );
+            }
+        }
     }
     
     /// Generates a squarified treemap layout for better aspect ratios
@@ -449,14 +668,66 @@ impl Visualizer {
         
         // Generate layout for files (if any)
         if !files.is_empty() {
-            let file_count = files.len();
+            // Apply Level of Detail (LOD) for files
+            let lod_threshold = 0.01; // Threshold for grouping small files
+            let mut grouped_files = Vec::new();
+            let mut others_size = 0.0;
+            let mut others_children = Vec::new();
+            
+            // Calculate total file size
+            let total_file_size: u64 = files.iter()
+                .map(|file| {
+                    if let Ok(metadata) = std::fs::metadata(&file.path) {
+                        metadata.len()
+                    } else {
+                        1000 // Default size
+                    }
+                })
+                .sum();
+            
+            // Group small files if zoom factor is low
+            if self.zoom_factor < 2.0 && files.len() > 20 {
+                for file in &files {
+                    let file_size = if let Ok(metadata) = std::fs::metadata(&file.path) {
+                        metadata.len()
+                    } else {
+                        1000 // Default size
+                    };
+                    
+                    let weight = file_size as f32 / total_file_size as f32;
+                    
+                    if weight < lod_threshold {
+                        others_size += weight;
+                        others_children.push((*file).clone());
+                    } else {
+                        grouped_files.push(*file);
+                    }
+                }
+                
+                // Add "Others" group if needed
+                if !others_children.is_empty() {
+                    // Create a synthetic directory entry for "Others"
+                    let others_entry = DirectoryEntry {
+                        name: "Others".to_string(),
+                        path: entry.path.join("Others"),
+                        is_directory: true,
+                        children: others_children,
+                    };
+                    
+                    grouped_files.push(&others_entry);
+                }
+            } else {
+                grouped_files = files;
+            }
+            
+            let file_count = grouped_files.len();
             let file_cols = (file_count as f32).sqrt().ceil() as usize;
             let file_rows = (file_count + file_cols - 1) / file_cols;
             
             let file_cell_width = width / file_cols as f32;
             let file_cell_height = file_height / file_rows as f32;
             
-            for (index, file) in files.iter().enumerate() {
+            for (index, file) in grouped_files.iter().enumerate() {
                 let row = index / file_cols;
                 let col = index % file_cols;
                 
@@ -477,7 +748,7 @@ impl Visualizer {
                     rect,
                     selected: false,
                     hovered: false,
-                    size_weight: 1.0 / files.len() as f32, // Equal weight for files
+                    size_weight: 1.0 / grouped_files.len() as f32, // Equal weight for files
                     animation_progress: 0.0,
                     prev_rect: None,
                 });
@@ -491,7 +762,7 @@ impl Visualizer {
     /// * `ui` - The egui UI to interact with
     /// * `pointer_pos` - The current pointer position
     /// * `clicked` - Whether the mouse was clicked
-    pub fn handle_interaction(&mut self, _ui: &mut egui::Ui, pointer_pos: Option<egui::Pos2>, clicked: bool) {
+    pub fn handle_interaction(&mut self, ui: &mut egui::Ui, pointer_pos: Option<egui::Pos2>, clicked: bool) {
         // Reset hover state
         self.hovered_index = None;
         
@@ -523,7 +794,102 @@ impl Visualizer {
             // Select the new square
             self.squares[index].selected = true;
             self.selected_index = Some(index);
+            
+            // If it's a directory, set it as the new root entry
+            if self.squares[index].entry.is_directory {
+                self.set_root_entry(self.squares[index].entry.clone());
+                self.animating = true;
+                self.animation_start_time = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+            }
         }
+        
+        // Handle right-click for context menu
+        if ui.ctx().input(|i| i.pointer.secondary_clicked()) && hover_index.is_some() {
+            let index = hover_index.unwrap();
+            ui.ctx().show_context_menu(|menu| {
+                if self.squares[index].entry.is_directory {
+                    menu.add_item(egui::Button::new("Open in Explorer").wrap(false), |_| {
+                        let path = self.squares[index].entry.path.clone();
+                        std::process::Command::new("explorer")
+                            .arg(path)
+                            .spawn()
+                            .ok();
+                    });
+                    
+                    menu.add_item(egui::Button::new("Set as Root").wrap(false), |_| {
+                        self.set_root_entry(self.squares[index].entry.clone());
+                    });
+                } else {
+                    menu.add_item(egui::Button::new("View Content").wrap(false), |_| {
+                        // Load file content asynchronously
+                        self.load_file_content(&self.squares[index].entry.path);
+                    });
+                    
+                    menu.add_item(egui::Button::new("Open in Default App").wrap(false), |_| {
+                        let path = self.squares[index].entry.path.clone();
+                        std::process::Command::new("cmd")
+                            .args(&["/c", "start", "", path.to_string_lossy().as_ref()])
+                            .spawn()
+                            .ok();
+                    });
+                }
+            });
+        }
+        
+        // Handle drag and drop
+        if let Some(pos) = pointer_pos {
+            if ui.input(|i| i.pointer.primary_down()) {
+                if self.dragging_index.is_none() && hover_index.is_some() {
+                    self.dragging_index = hover_index;
+                }
+            } else if self.dragging_index.is_some() && !ui.input(|i| i.pointer.primary_down()) {
+                self.dragging_index = None;
+            } else if let Some(index) = self.dragging_index {
+                // Update position of dragged square
+                let size = self.squares[index].rect.size();
+                self.squares[index].rect = egui::Rect::from_center_size(
+                    pos,
+                    size,
+                );
+            }
+        }
+    }
+    
+    /// Loads file content asynchronously for tooltips
+    ///
+    /// # Arguments
+    /// * `path` - Path to the file
+    fn load_file_content(&mut self, path: &std::path::Path) {
+        let path_str = path.to_string_lossy().to_string();
+        
+        // Check if we already have the content cached
+        if let Ok(cache) = self.file_content_cache.lock() {
+            if cache.contains_key(&path_str) {
+                return;
+            }
+        }
+        
+        // Set loading flag
+        self.loading_file_content = true;
+        
+        // Clone the path and cache for the thread
+        let path_clone = path.to_path_buf();
+        let cache_clone = Arc::clone(&self.file_content_cache);
+        
+        // Spawn a thread to load the file content
+        thread::spawn(move || {
+            let content = std::fs::read_to_string(&path_clone)
+                .map(|s| s.lines().take(5).collect::<Vec<_>>().join("\n"))
+                .unwrap_or_else(|_| "Content unavailable".to_string());
+            
+            // Store in cache
+            if let Ok(mut cache) = cache_clone.lock() {
+                cache.insert(path_str, content);
+            }
+        });
     }
     
     /// Renders the visualization
@@ -534,10 +900,16 @@ impl Visualizer {
         let canvas_rect = ui.available_rect_before_wrap();
         
         // Draw the canvas background
+        let bg_color = match self.theme {
+            Theme::Light => egui::Color32::from_rgb(240, 240, 240),
+            Theme::Dark => egui::Color32::from_rgb(30, 30, 30),
+            Theme::Custom(ref colors) => *colors.get("background").unwrap_or(&egui::Color32::from_rgb(240, 240, 240)),
+        };
+        
         ui.painter().rect_filled(
             canvas_rect,
             0.0,
-            egui::Color32::from_rgb(240, 240, 240),
+            bg_color,
         );
         
         // Draw each square
@@ -552,9 +924,17 @@ impl Visualizer {
             
             // Choose color based on type, selection state, and opacity
             let fill_color = if square.selected {
-                egui::Color32::from_rgb(100, 150, 250) // Blue for selected
+                match self.theme {
+                    Theme::Light => egui::Color32::from_rgb(100, 150, 250), // Blue for selected
+                    Theme::Dark => egui::Color32::from_rgb(80, 120, 200),   // Darker blue for dark theme
+                    Theme::Custom(ref colors) => *colors.get("selected").unwrap_or(&egui::Color32::from_rgb(100, 150, 250)),
+                }
             } else if square.entry.is_directory {
-                egui::Color32::from_rgb(70, 130, 180) // Steel blue for directories
+                match self.theme {
+                    Theme::Light => egui::Color32::from_rgb(70, 130, 180), // Steel blue for directories
+                    Theme::Dark => egui::Color32::from_rgb(60, 100, 140),  // Darker blue for dark theme
+                    Theme::Custom(ref colors) => *colors.get("directory").unwrap_or(&egui::Color32::from_rgb(70, 130, 180)),
+                }
             } else {
                 // For files, use the file type color with calculated opacity
                 let base_color = self.get_file_color(&square.entry.name);
@@ -599,23 +979,40 @@ impl Visualizer {
             // Draw the border with appropriate style
             let border_color = if square.selected {
                 egui::Color32::WHITE
+            } else if square.hovered {
+                // Add glow effect for hovered squares
+                egui::Color32::from_rgb(255, 255, 0) // Yellow glow
             } else {
-                egui::Color32::from_rgb(50, 50, 50)
+                match self.theme {
+                    Theme::Light => egui::Color32::from_rgb(50, 50, 50),
+                    Theme::Dark => egui::Color32::from_rgb(150, 150, 150),
+                    Theme::Custom(ref colors) => *colors.get("border").unwrap_or(&egui::Color32::from_rgb(50, 50, 50)),
+                }
             };
             
+            // Draw border with appropriate stroke
+            let stroke_width = if square.hovered { 2.0 } else { 1.0 };
             ui.painter().rect_stroke(
                 draw_rect,
                 egui::CornerRadius::same(corner_radius),
-                egui::Stroke::new(1.0, border_color),
+                egui::Stroke::new(stroke_width, border_color),
                 egui::epaint::StrokeKind::Middle,
             );
             
             // Draw the name with appropriate style
             let text_color = if square.entry.is_directory {
-                egui::Color32::WHITE
+                match self.theme {
+                    Theme::Light => egui::Color32::WHITE,
+                    Theme::Dark => egui::Color32::WHITE,
+                    Theme::Custom(ref colors) => *colors.get("directory_text").unwrap_or(&egui::Color32::WHITE),
+                }
             } else {
                 // Darker text for files to ensure readability
-                egui::Color32::from_rgb(20, 20, 20)
+                match self.theme {
+                    Theme::Light => egui::Color32::from_rgb(20, 20, 20),
+                    Theme::Dark => egui::Color32::from_rgb(220, 220, 220),
+                    Theme::Custom(ref colors) => *colors.get("file_text").unwrap_or(&egui::Color32::from_rgb(20, 20, 20)),
+                }
             };
             
             // Adjust text size based on square size (using the animated rectangle)
@@ -705,7 +1102,7 @@ impl Visualizer {
             let content_detail = ((self.zoom_factor - 3.0) / 1.0).clamp(0.0, 1.0); // Fades in from 3.0 to 4.0
             
             // Create tooltip content based on entry type and zoom level
-            let tooltip_text = if square.entry.is_directory {
+            let mut tooltip_text = if square.entry.is_directory {
                 if content_detail > 0.5 && !square.entry.children.is_empty() {
                     // At high zoom, show more details about directory contents
                     let child_count = square.entry.children.len();
@@ -731,9 +1128,22 @@ impl Visualizer {
                 }
             };
             
+            // Add file content preview for files at high zoom levels
+            if content_detail > 0.5 && !square.entry.is_directory {
+                let path_str = square.entry.path.to_string_lossy().to_string();
+                
+                // Check if we have the content cached
+                if let Ok(cache) = self.file_content_cache.lock() {
+                    if let Some(content) = cache.get(&path_str) {
+                        tooltip_text = format!("{}\n\n{}", tooltip_text, content);
+                    }
+                }
+            }
+            
             // Calculate tooltip size based on content
-            let tooltip_width = tooltip_text.len().min(30) as f32 * 7.0;
-            let tooltip_height = if tooltip_text.contains('\n') { 40.0 } else { 30.0 };
+            let tooltip_width = tooltip_text.len().min(50) as f32 * 7.0;
+            let line_count = tooltip_text.matches('\n').count() + 1;
+            let tooltip_height = line_count as f32 * 20.0;
             
             let tooltip_rect = egui::Rect::from_min_size(
                 tooltip_pos,
@@ -741,19 +1151,31 @@ impl Visualizer {
             );
             
             // Draw tooltip background
+            let tooltip_bg_color = match self.theme {
+                Theme::Light => egui::Color32::from_rgb(50, 50, 50),
+                Theme::Dark => egui::Color32::from_rgb(70, 70, 70),
+                Theme::Custom(ref colors) => *colors.get("tooltip_bg").unwrap_or(&egui::Color32::from_rgb(50, 50, 50)),
+            };
+            
             ui.painter().rect_filled(
                 tooltip_rect,
                 egui::CornerRadius::same(2),
-                egui::Color32::from_rgb(50, 50, 50),
+                tooltip_bg_color,
             );
             
             // Draw tooltip text
+            let tooltip_text_color = match self.theme {
+                Theme::Light => egui::Color32::WHITE,
+                Theme::Dark => egui::Color32::WHITE,
+                Theme::Custom(ref colors) => *colors.get("tooltip_text").unwrap_or(&egui::Color32::WHITE),
+            };
+            
             ui.painter().text(
                 tooltip_rect.center(),
                 egui::Align2::CENTER_CENTER,
                 &tooltip_text,
                 egui::FontId::proportional(12.0),
-                egui::Color32::WHITE,
+                tooltip_text_color,
             );
         }
     }
@@ -765,13 +1187,50 @@ impl Visualizer {
     fn initialize_file_colors() -> HashMap<String, egui::Color32> {
         let mut colors = HashMap::new();
         
-        // Add colors for common file types
-        colors.insert("rs".to_string(), egui::Color32::from_rgb(250, 100, 100)); // Rust files
-        colors.insert("js".to_string(), egui::Color32::from_rgb(240, 220, 100)); // JavaScript
-        colors.insert("py".to_string(), egui::Color32::from_rgb(100, 200, 150)); // Python
-        colors.insert("md".to_string(), egui::Color32::from_rgb(150, 150, 250)); // Markdown
-        colors.insert("txt".to_string(), egui::Color32::from_rgb(200, 200, 200)); // Text
-        colors.insert("json".to_string(), egui::Color32::from_rgb(250, 150, 100)); // JSON
+        // Add colors for common file types using a perceptually uniform palette
+        // Code files
+        colors.insert("rs".to_string(), egui::Color32::from_rgb(250, 100, 100)); // Rust files - Red
+        colors.insert("js".to_string(), egui::Color32::from_rgb(240, 220, 100)); // JavaScript - Yellow
+        colors.insert("py".to_string(), egui::Color32::from_rgb(100, 200, 150)); // Python - Green
+        colors.insert("java".to_string(), egui::Color32::from_rgb(180, 120, 80)); // Java - Brown
+        colors.insert("c".to_string(), egui::Color32::from_rgb(100, 160, 200)); // C - Blue
+        colors.insert("cpp".to_string(), egui::Color32::from_rgb(120, 140, 220)); // C++ - Purple-blue
+        colors.insert("h".to_string(), egui::Color32::from_rgb(140, 180, 220)); // Header - Light blue
+        colors.insert("cs".to_string(), egui::Color32::from_rgb(100, 180, 180)); // C# - Teal
+        
+        // Web files
+        colors.insert("html".to_string(), egui::Color32::from_rgb(255, 159, 64)); // HTML - Orange
+        colors.insert("css".to_string(), egui::Color32::from_rgb(153, 102, 255)); // CSS - Purple
+        colors.insert("scss".to_string(), egui::Color32::from_rgb(173, 122, 255)); // SCSS - Light purple
+        colors.insert("less".to_string(), egui::Color32::from_rgb(133, 102, 235)); // LESS - Dark purple
+        colors.insert("svg".to_string(), egui::Color32::from_rgb(255, 120, 180)); // SVG - Pink
+        
+        // Data files
+        colors.insert("json".to_string(), egui::Color32::from_rgb(250, 150, 100)); // JSON - Orange
+        colors.insert("xml".to_string(), egui::Color32::from_rgb(200, 150, 200)); // XML - Light purple
+        colors.insert("yaml".to_string(), egui::Color32::from_rgb(180, 200, 120)); // YAML - Light green
+        colors.insert("yml".to_string(), egui::Color32::from_rgb(180, 200, 120)); // YML - Light green
+        colors.insert("toml".to_string(), egui::Color32::from_rgb(200, 180, 140)); // TOML - Tan
+        colors.insert("csv".to_string(), egui::Color32::from_rgb(160, 220, 160)); // CSV - Light green
+        
+        // Document files
+        colors.insert("md".to_string(), egui::Color32::from_rgb(150, 150, 250)); // Markdown - Blue
+        colors.insert("txt".to_string(), egui::Color32::from_rgb(200, 200, 200)); // Text - Gray
+        colors.insert("pdf".to_string(), egui::Color32::from_rgb(240, 100, 100)); // PDF - Red
+        colors.insert("doc".to_string(), egui::Color32::from_rgb(100, 150, 250)); // DOC - Blue
+        colors.insert("docx".to_string(), egui::Color32::from_rgb(100, 150, 250)); // DOCX - Blue
+        
+        // Image files
+        colors.insert("png".to_string(), egui::Color32::from_rgb(100, 220, 200)); // PNG - Teal
+        colors.insert("jpg".to_string(), egui::Color32::from_rgb(120, 200, 220)); // JPG - Light blue
+        colors.insert("jpeg".to_string(), egui::Color32::from_rgb(120, 200, 220)); // JPEG - Light blue
+        colors.insert("gif".to_string(), egui::Color32::from_rgb(200, 120, 220)); // GIF - Pink
+        colors.insert("webp".to_string(), egui::Color32::from_rgb(150, 220, 200)); // WEBP - Light teal
+        
+        // Config files
+        colors.insert("gitignore".to_string(), egui::Color32::from_rgb(150, 150, 150)); // Gitignore - Gray
+        colors.insert("env".to_string(), egui::Color32::from_rgb(120, 180, 120)); // Env - Green
+        colors.insert("lock".to_string(), egui::Color32::from_rgb(180, 180, 180)); // Lock - Gray
         
         colors
     }
