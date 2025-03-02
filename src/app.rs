@@ -85,6 +85,9 @@ pub struct GitScrollApp {
     sort_direction: SortDirection,
     is_loading_tokens: bool,
     
+    // Table UI state
+    column_widths: [f32; 3], // Widths for Index, Name, Tokens columns
+    
     // Background processing channels
     clone_receiver: mpsc::Receiver<Result<PathBuf, String>>,
     parse_receiver: mpsc::Receiver<Result<DirectoryEntry, String>>,
@@ -124,6 +127,9 @@ impl GitScrollApp {
             sort_column: SortColumn::Index,
             sort_direction: SortDirection::Ascending,
             is_loading_tokens: false,
+            
+            // Table UI state
+            column_widths: [60.0, 400.0, 100.0], // Default widths for columns
             
             // Background processing channels
             clone_receiver,
@@ -573,7 +579,7 @@ impl eframe::App for GitScrollApp {
             ui.add_space(4.0);
             
             // Status bar
-            self.ui_handler.render_status_bar(ui, &self.status_message);
+            self.ui_handler.render_status_bar(ui, &self.status_message, self.is_loading_tokens);
             
             // Stats bar (if repository is loaded)
             if self.directory_structure.is_some() {
@@ -592,14 +598,8 @@ impl eframe::App for GitScrollApp {
                 // Empty state when no repository is loaded
                 self.ui_handler.render_empty_state(ui, &mut self.git_url);
             } else {
-                // Show file list heading with loading indicator if needed
-                ui.horizontal(|ui| {
-                    ui.heading("Repository Files");
-                    if self.is_loading_tokens {
-                        ui.spinner();
-                        ui.label("Counting tokens...");
-                    }
-                });
+                // Show file list heading
+                ui.heading("Repository Files");
                 
                 ui.add_space(8.0);
                 
@@ -628,60 +628,47 @@ impl eframe::App for GitScrollApp {
                             .num_columns(3)
                             .spacing([8.0, 4.0])
                             .show(ui, |ui| {
-                                // Number column
-                                let index_text = format!("Number {}",
-                                    if self.sort_column == SortColumn::Index {
+                                let headers = [
+                                    ("Number", SortColumn::Index, self.column_widths[0]),
+                                    ("File Name", SortColumn::Name, self.column_widths[1]),
+                                    ("Token Count", SortColumn::Tokens, self.column_widths[2]),
+                                ];
+                                
+                                for (i, (text, col, width)) in headers.iter().enumerate() {
+                                    let sort_indicator = if self.sort_column == *col {
                                         if self.sort_direction == SortDirection::Ascending { "↑" } else { "↓" }
-                                    } else { "" }
-                                );
-                                
-                                if ui.add(egui::Button::new(egui::RichText::new(index_text).strong())
-                                    .min_size(egui::vec2(60.0, 0.0)))
-                                    .clicked() {
-                                    self.sort_column = SortColumn::Index;
-                                    self.sort_direction = match self.sort_direction {
-                                        SortDirection::Ascending => SortDirection::Descending,
-                                        SortDirection::Descending => SortDirection::Ascending,
-                                    };
-                                    self.sort_file_list();
-                                }
-                                
-                                // File name column
-                                let name_text = format!("File Name {}",
-                                    if self.sort_column == SortColumn::Name {
-                                        if self.sort_direction == SortDirection::Ascending { "↑" } else { "↓" }
-                                    } else { "" }
-                                );
-                                
-                                if ui.add(egui::Button::new(egui::RichText::new(name_text).strong()))
-                                    .clicked() {
-                                    self.sort_column = SortColumn::Name;
-                                    self.sort_direction = match self.sort_direction {
-                                        SortDirection::Ascending => SortDirection::Descending,
-                                        SortDirection::Descending => SortDirection::Ascending,
-                                    };
-                                    self.sort_file_list();
-                                }
-                                
-                                // Token count column
-                                let tokens_text = format!("Token Count {}",
-                                    if self.sort_column == SortColumn::Tokens {
-                                        if self.sort_direction == SortDirection::Ascending { "↑" } else { "↓" }
-                                    } else { "" }
-                                );
-                                
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    if ui.add(egui::Button::new(egui::RichText::new(tokens_text).strong())
-                                        .min_size(egui::vec2(100.0, 0.0)))
-                                        .clicked() {
-                                        self.sort_column = SortColumn::Tokens;
-                                        self.sort_direction = match self.sort_direction {
-                                            SortDirection::Ascending => SortDirection::Descending,
-                                            SortDirection::Descending => SortDirection::Ascending,
-                                        };
-                                        self.sort_file_list();
+                                    } else { "" };
+                                    
+                                    let header_text = format!("{} {}", text, sort_indicator);
+                                    ui.add_sized([*width, 0.0], egui::Label::new(egui::RichText::new(header_text).strong()));
+                                    
+                                    // Add resize handle between columns
+                                    if i < 2 { // Only between columns
+                                        // Create a small draggable area for resizing
+                                        let resize_id = ui.id().with(("resize", i));
+                                        let resize_rect = egui::Rect::from_min_size(
+                                            ui.cursor().min,
+                                            egui::vec2(4.0, 20.0)
+                                        );
+                                        
+                                        let resize_response = ui.interact(
+                                            resize_rect,
+                                            resize_id,
+                                            egui::Sense::drag()
+                                        );
+                                        
+                                        if resize_response.dragged() {
+                                            let delta = ui.input(|i| i.pointer.delta().x);
+                                            self.column_widths[i] += delta;
+                                            self.column_widths[i] = self.column_widths[i].clamp(50.0, 600.0);
+                                        }
+                                        
+                                        // Show resize cursor on hover
+                                        if resize_response.hovered() {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                                        }
                                     }
-                                });
+                                }
                                 
                                 ui.end_row();
                             });
@@ -703,16 +690,15 @@ impl eframe::App for GitScrollApp {
                                 
                                 row_frame.show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        // Index column (fixed width)
-                                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                            ui.add_sized([60.0, 20.0], egui::Label::new(file.index.to_string()));
-                                        });
+                                        // Index column with dynamic width
+                                        ui.add_sized([self.column_widths[0], 20.0], egui::Label::new(file.index.to_string()));
                                         
                                         // File path column (truncated with tooltip)
                                         let path_str = file.path.to_string_lossy();
                                         let truncated_path = crate::ui::UiHandler::truncate_path(&path_str, 50);
                                         
-                                        let path_label = ui.add(
+                                        let path_label = ui.add_sized(
+                                            [self.column_widths[1], 20.0],
                                             egui::Label::new(
                                                 egui::RichText::new(truncated_path)
                                                     .family(egui::FontFamily::Monospace)
@@ -741,7 +727,7 @@ impl eframe::App for GitScrollApp {
                                                 .inner_margin(Margin::symmetric(6, 2))
                                                 .show(ui, |ui| {
                                                     ui.add_sized(
-                                                        [100.0, 20.0],
+                                                        [self.column_widths[2], 20.0],
                                                         egui::Label::new(
                                                             egui::RichText::new(file.tokens.to_string())
                                                                 .strong()
@@ -767,10 +753,11 @@ impl eframe::App for GitScrollApp {
                             total_frame.show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     // Empty index cell
-                                    ui.add_sized([60.0, 20.0], egui::Label::new(""));
+                                    ui.add_sized([self.column_widths[0], 20.0], egui::Label::new(""));
                                     
                                     // Total label
-                                    ui.add(
+                                    ui.add_sized(
+                                        [self.column_widths[1], 20.0],
                                         egui::Label::new(
                                             egui::RichText::new(format!("Total: {} files", total_files))
                                                 .strong()
@@ -780,7 +767,7 @@ impl eframe::App for GitScrollApp {
                                     // Total tokens (right-aligned)
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         ui.add_sized(
-                                            [100.0, 20.0],
+                                            [self.column_widths[2], 20.0],
                                             egui::Label::new(
                                                 egui::RichText::new(total_tokens.to_string())
                                                     .strong()
