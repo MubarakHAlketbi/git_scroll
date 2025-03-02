@@ -257,49 +257,92 @@ impl Visualizer {
             return;
         }
         
-        // Filter to only include directories
-        let directories: Vec<&DirectoryEntry> = entry.children.iter()
-            .filter(|child| child.is_directory)
-            .collect();
+        // Include both directories and files based on zoom level
+        let show_files = self.zoom_factor >= 2.0;
+        let entries: Vec<&DirectoryEntry> = if show_files {
+            entry.children.iter().collect()
+        } else {
+            entry.children.iter()
+                .filter(|child| child.is_directory)
+                .collect()
+        };
         
-        let dir_count = directories.len();
-        if dir_count == 0 {
+        let entry_count = entries.len();
+        if entry_count == 0 {
             return;
         }
         
         // Calculate grid dimensions based on aspect ratio for better layout
         let aspect_ratio = width / height;
-        let cols = (dir_count as f32 * aspect_ratio).sqrt().ceil() as usize;
-        let rows = (dir_count as f32 / cols as f32).ceil() as usize;
+        let cols = (entry_count as f32 * aspect_ratio).sqrt().ceil() as usize;
+        let rows = (entry_count as f32 / cols as f32).ceil() as usize;
         
         // Calculate cell size
         let cell_width = width / cols as f32;
         let cell_height = height / rows as f32;
         
-        // Create squares for each directory
-        for (index, dir) in directories.iter().enumerate() {
+        // Calculate sizes for variable sizing
+        let mut total_size: u64 = 1; // Start with 1 to avoid division by zero
+        let mut entry_sizes: Vec<u64> = Vec::with_capacity(entry_count);
+        
+        for entry in &entries {
+            let size = if entry.is_directory {
+                // For directories, use the number of children as a size proxy
+                // or calculate actual size if needed
+                let child_count = entry.children.len();
+                (child_count as u64 + 1) * 1000 // Add 1 to avoid zero size
+            } else {
+                // For files, use the actual file size if available
+                if let Ok(metadata) = std::fs::metadata(&entry.path) {
+                    let file_size = metadata.len();
+                    if file_size > 0 { file_size } else { 1000 } // Minimum size
+                } else {
+                    1000 // Default size if metadata can't be read
+                }
+            };
+            
+            entry_sizes.push(size);
+            total_size += size;
+        }
+        
+        // Create squares for each entry with variable sizing
+        for (index, (entry, size)) in entries.iter().zip(entry_sizes.iter()).enumerate() {
             let row = index / cols;
             let col = index % cols;
             
+            // Base position
             let x = col as f32 * cell_width;
             let y = row as f32 * cell_height;
             
-            // Add padding
+            // Calculate size factor (between 0.5 and 1.5) based on relative size
+            let size_factor = 0.5 + ((*size as f32) / (total_size as f32) * entry_count as f32).min(1.0);
+            
+            // Add padding and adjust size based on size_factor
             let padding = 10.0;
+            let adjusted_width = (cell_width - 2.0 * padding) * size_factor;
+            let adjusted_height = (cell_height - 2.0 * padding) * size_factor;
+            
+            // Center the rectangle within its cell
+            let x_offset = (cell_width - adjusted_width) / 2.0;
+            let y_offset = (cell_height - adjusted_height) / 2.0;
+            
             let rect = egui::Rect::from_min_size(
-                egui::pos2(x + padding, y + padding),
-                egui::vec2(cell_width - 2.0 * padding, cell_height - 2.0 * padding),
+                egui::pos2(x + x_offset, y + y_offset),
+                egui::vec2(adjusted_width, adjusted_height),
             );
             
-            // Clone the directory entry to get an owned copy
-            let dir_entry = (*dir).clone();
+            // Clone the entry to get an owned copy
+            let entry_clone = (*entry).clone();
+            
+            // Calculate size weight for potential future use
+            let size_weight = *size as f32 / total_size as f32;
             
             self.squares.push(VisualSquare {
-                entry: dir_entry,
+                entry: entry_clone,
                 rect,
                 selected: false,
                 hovered: false,
-                size_weight: 1.0 / dir_count as f32, // Equal weight for grid layout
+                size_weight,
                 animation_progress: 0.0,
                 prev_rect: None,
             });
@@ -1280,7 +1323,7 @@ impl Visualizer {
     /// * `zoom_in` - Whether to zoom in (true) or out (false)
     pub fn zoom(&mut self, zoom_in: bool) {
         // Calculate the new target zoom factor with fine-grained control
-        let zoom_step: f32 = 0.1; // Small increments for smooth zooming
+        let zoom_step: f32 = 0.2; // Slightly larger increments for more noticeable zooming
         let new_target = if zoom_in {
             (self.zoom_factor + zoom_step).min(4.0) // Max zoom is 4.0
         } else {
@@ -1290,6 +1333,16 @@ impl Visualizer {
         // If no significant change, return early
         if (new_target - self.target_zoom_factor).abs() < 0.01 {
             return;
+        }
+        
+        // Clear layout cache to force regeneration with new zoom level
+        if let Some(root) = &self.root_entry {
+            let cache_key = format!("{}_{}_{:?}",
+                root.path.to_string_lossy(),
+                new_target,  // Use new_target instead of current zoom_factor
+                self.layout_type
+            );
+            self.layout_cache.remove(&cache_key);
         }
         
         self.target_zoom_factor = new_target;
@@ -1309,7 +1362,8 @@ impl Visualizer {
         
         // Regenerate the visualization based on the new zoom factor
         if let Some(root) = &self.root_entry {
-            self.set_root_entry(root.clone());
+            // Use generate_squares instead of set_root_entry to avoid clearing the cache
+            self.generate_squares();
         }
     }
     
