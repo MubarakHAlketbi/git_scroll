@@ -2,7 +2,7 @@ use eframe::egui;
 use std::time::Duration;
 use std::sync::Arc;
 use egui::LayerId;
-use epaint::{Margin, CornerRadius};
+use eframe::epaint::{Margin, CornerRadius};
 
 /// Handles UI components and interactions
 pub struct UiHandler {
@@ -49,7 +49,7 @@ impl UiHandler {
             ui.label(egui::RichText::new("Git URL:").strong());
             
             // URL text field with placeholder
-            let response = ui.add(
+            let _response = ui.add(
                 egui::TextEdit::singleline(git_url)
                     .hint_text("Enter repository URL...")
                     .desired_width(ui.available_width() - 250.0)
@@ -286,9 +286,7 @@ impl UiHandler {
                 })
                 .corner_radius(10.0)
                 .shadow(egui::epaint::Shadow {
-                    offset: egui::vec2(0.0, 0.0),
-                    blur: 5.0,
-                    spread: 0.0,
+                    extrusion: 5.0,
                     color: egui::Color32::from_black_alpha(40),
                 })
                 .show(ui, |ui| {
@@ -424,7 +422,7 @@ pub mod style {
         // Add monospace font for code-related data
         fonts.font_data.insert(
             "jetbrains_mono".to_owned(),
-            Arc::new(egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf"))),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf"))),
         );
         
         // Set monospace as the proportional font for code
@@ -462,7 +460,7 @@ pub mod style {
         // Add monospace font for code-related data
         fonts.font_data.insert(
             "jetbrains_mono".to_owned(),
-            Arc::new(egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf"))),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf"))),
         );
         
         // Set monospace as the proportional font for code

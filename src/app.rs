@@ -2,8 +2,7 @@ use eframe::egui;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use epaint::Margin;
-use epaint::CornerRadius;
+use eframe::epaint::{Margin, CornerRadius};
 use egui::LayerId;
 
 use crate::git::GitHandler;
