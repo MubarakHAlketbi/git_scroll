@@ -23,8 +23,28 @@ pub struct DirectoryParser {
 }
 
 impl DirectoryParser {
+    /// Collects all files recursively into a flat list
+    pub fn get_all_files(&self, entry: &DirectoryEntry) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        self.collect_files_recursive(entry, &mut files);
+        files
+    }
+
+    /// Helper method to recursively collect files
+    fn collect_files_recursive(&self, entry: &DirectoryEntry, files: &mut Vec<PathBuf>) {
+        if !entry.is_directory {
+            if !self.should_ignore(&entry.path) {
+                files.push(entry.path.clone());
+            }
+        } else {
+            for child in &entry.children {
+                self.collect_files_recursive(child, files);
+            }
+        }
+    }
+
     /// Creates a new DirectoryParser with default ignore patterns
-    /// 
+    ///
     /// # Returns
     /// A new DirectoryParser instance
     pub fn new() -> Self {

@@ -1,19 +1,20 @@
 # Git Scroll
 
-A visualization tool for Git repositories, optimized for LLM context.
+A file listing and token counting tool for Git repositories, optimized for LLM context.
 
 ## Overview
 
-Git Scroll is a desktop application that helps you visualize Git repository structures and export them in formats optimized for Large Language Models (LLMs). It provides an interactive, zoomable interface to explore repositories and understand their structure.
+Git Scroll is a desktop application that helps you analyze Git repositories by providing a sortable list of files with token counts. This makes it easier to prepare repositories for use with Large Language Models (LLMs) by understanding token usage across your codebase.
 
 ![Git Scroll Screenshot](docs/screenshot.png) *(Screenshot will be added in the future)*
 
 ## Features
 
-- **Repository Visualization**: Interactive squares representing directories and files
-- **Zoom Levels**: Multiple levels of detail, from high-level overview to file content
+- **File List View**: Sortable table of files with columns for index, file name, and token count
+- **Token Counting**: Automatically counts tokens in text files for LLM context optimization
+- **Sorting Options**: Sort by file name, index, or token count in ascending or descending order
 - **Filtering**: Built-in filters for common directories to ignore (node_modules, .git, etc.)
-- **Export Options**: Export repository structure in formats optimized for LLMs
+- **Statistics Panel**: Shows total files, total tokens, and top files by token count
 - **Cross-Platform**: Works on Windows, macOS, and Linux
 
 ## Installation
@@ -40,13 +41,14 @@ Git Scroll is a desktop application that helps you visualize Git repository stru
    ```
    cargo run --release
    ```
-
 ## Usage
 
 1. Enter a Git repository URL in the input field
 2. Click "Clone" to clone and analyze the repository
-3. Use the zoom controls to adjust the level of detail
-4. Click on directories to explore their contents
+3. View the list of files with their token counts
+4. Click on column headers to sort by different criteria
+5. Use the settings panel to change sort options or apply filters
+6. Check the statistics panel for token usage insights
 5. Export the repository structure for use with LLMs
 
 ## Project Structure

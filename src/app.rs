@@ -1,5 +1,5 @@
 use eframe::egui;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 
@@ -7,6 +7,51 @@ use crate::git::GitHandler;
 use crate::directory::{DirectoryParser, DirectoryEntry};
 use crate::visualization::{Visualizer, LayoutType, Theme};
 use crate::ui::UiHandler;
+
+/// Represents a file's metadata for the list view
+#[derive(Clone)]
+struct FileInfo {
+    index: usize,          // Order in the list
+    path: PathBuf,         // Full path to the file
+    tokens: usize,         // Number of tokens in the file
+}
+
+/// Counts tokens in a file by splitting on whitespace
+fn count_tokens(path: &Path) -> usize {
+    // Define text file extensions
+    let text_extensions = [
+        "txt", "rs", "py", "js", "md", "html", "css", "json", "yaml", "toml",
+    ];
+
+    // Check if the file has a text extension
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if !text_extensions.contains(&ext.to_lowercase().as_str()) {
+            return 0; // Skip non-text files
+        }
+    } else {
+        return 0; // No extension, assume binary
+    }
+
+    // Read file content and count words
+    match std::fs::read_to_string(path) {
+        Ok(content) => content.split_whitespace().count(),
+        Err(_) => 0, // Return 0 if file can't be read
+    }
+}
+
+/// Enum for sortable columns
+#[derive(PartialEq)]
+enum SortColumn {
+    Index,
+    Name,
+    Tokens,
+}
+
+/// Enum for sort direction
+enum SortDirection {
+    Ascending,
+    Descending,
+}
 
 /// Main application state for Git Scroll
 pub struct GitScrollApp {
@@ -33,6 +78,11 @@ pub struct GitScrollApp {
     current_layout: LayoutType,
     current_theme: Theme,
     filter_pattern: String,
+    
+    // File list state
+    file_list: Vec<FileInfo>,
+    sort_column: SortColumn,
+    sort_direction: SortDirection,
     
     // Background processing channels
     clone_receiver: mpsc::Receiver<Result<PathBuf, String>>,
@@ -68,6 +118,11 @@ impl GitScrollApp {
             current_layout: LayoutType::Grid,
             current_theme: Theme::Light,
             filter_pattern: String::new(),
+            
+            // File list state
+            file_list: Vec::new(),
+            sort_column: SortColumn::Index,
+            sort_direction: SortDirection::Ascending,
             
             // Background processing channels
             clone_receiver,
@@ -201,33 +256,39 @@ impl GitScrollApp {
     }
     
     /// Renders the statistics panel
-    /// 
+    ///
     /// # Arguments
     /// * `ui` - The egui UI to render to
     fn render_stats_panel(&self, ui: &mut egui::Ui) {
         ui.heading("Repository Statistics");
         ui.add_space(10.0);
         
-        if let Some(stats) = self.visualizer.directory_stats.as_ref() {
-            ui.label(format!("Total Files: {}", stats.total_files));
-            ui.label(format!("Total Directories: {}", stats.total_directories));
-            ui.label(format!("Total Size: {} KB", stats.total_size_bytes / 1024));
-            ui.label(format!("Max Depth: {}", stats.max_depth));
+        if !self.file_list.is_empty() {
+            let total_files = self.file_list.len();
+            let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
+            let avg_tokens = if total_files > 0 { total_tokens / total_files } else { 0 };
+            
+            ui.label(format!("Total Text Files: {}", total_files));
+            ui.label(format!("Total Tokens: {}", total_tokens));
+            ui.label(format!("Average Tokens per File: {}", avg_tokens));
             
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
             
-            ui.heading("File Types");
+            ui.heading("Top Files by Token Count");
             ui.add_space(5.0);
             
-            // Sort file types by count
-            let mut file_types: Vec<(&String, &usize)> = stats.file_types.iter().collect();
-            file_types.sort_by(|a, b| b.1.cmp(a.1));
+            // Get top files by token count
+            let mut top_files = self.file_list.clone();
+            top_files.sort_by(|a, b| b.tokens.cmp(&a.tokens));
             
-            // Display top file types
-            for (ext, count) in file_types.iter().take(10) {
-                ui.label(format!("{}: {}", ext, count));
+            // Display top files
+            for file in top_files.iter().take(10) {
+                let file_name = file.path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                ui.label(format!("{}: {} tokens", file_name, file.tokens));
             }
         } else {
             ui.label("No statistics available");
@@ -235,27 +296,37 @@ impl GitScrollApp {
     }
     
     /// Renders the settings panel
-    /// 
+    ///
     /// # Arguments
     /// * `ui` - The egui UI to render to
     fn render_settings_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Visualization Settings");
+        ui.heading("File List Settings");
         ui.add_space(10.0);
         
-        // Layout selection
-        ui.label("Layout:");
+        // Sort settings
+        ui.label("Sort By:");
         ui.horizontal(|ui| {
-            if ui.radio_value(&mut self.current_layout, LayoutType::Grid, "Grid").clicked() {
-                self.handle_layout_change(LayoutType::Grid);
+            if ui.radio_value(&mut self.sort_column, SortColumn::Index, "Number").clicked() {
+                self.sort_file_list();
             }
-            if ui.radio_value(&mut self.current_layout, LayoutType::Treemap, "Treemap").clicked() {
-                self.handle_layout_change(LayoutType::Treemap);
+            if ui.radio_value(&mut self.sort_column, SortColumn::Name, "Name").clicked() {
+                self.sort_file_list();
             }
-            if ui.radio_value(&mut self.current_layout, LayoutType::ForceDirected, "Force-Directed").clicked() {
-                self.handle_layout_change(LayoutType::ForceDirected);
+            if ui.radio_value(&mut self.sort_column, SortColumn::Tokens, "Tokens").clicked() {
+                self.sort_file_list();
             }
-            if ui.radio_value(&mut self.current_layout, LayoutType::Detailed, "Detailed").clicked() {
-                self.handle_layout_change(LayoutType::Detailed);
+        });
+        
+        ui.add_space(5.0);
+        
+        // Sort direction
+        ui.label("Sort Direction:");
+        ui.horizontal(|ui| {
+            if ui.radio_value(&mut self.sort_direction, SortDirection::Ascending, "Ascending").clicked() {
+                self.sort_file_list();
+            }
+            if ui.radio_value(&mut self.sort_direction, SortDirection::Descending, "Descending").clicked() {
+                self.sort_file_list();
             }
         });
         
@@ -288,7 +359,52 @@ impl GitScrollApp {
 }
 
 impl GitScrollApp {
-    // ... existing methods ...
+    /// Populates the file list from the directory structure
+    fn populate_file_list(&mut self, root_entry: &DirectoryEntry) {
+        self.file_list.clear();
+        let files = self.directory_parser.get_all_files(root_entry);
+        for (index, path) in files.into_iter().enumerate() {
+            let tokens = count_tokens(&path);
+            self.file_list.push(FileInfo {
+                index,
+                path,
+                tokens,
+            });
+        }
+        self.sort_file_list(); // Initial sort
+    }
+
+    /// Sorts the file list based on current sort settings
+    fn sort_file_list(&mut self) {
+        match self.sort_column {
+            SortColumn::Index => {
+                self.file_list.sort_by(|a, b| {
+                    match self.sort_direction {
+                        SortDirection::Ascending => a.index.cmp(&b.index),
+                        SortDirection::Descending => b.index.cmp(&a.index),
+                    }
+                });
+            }
+            SortColumn::Name => {
+                self.file_list.sort_by(|a, b| {
+                    let a_name = a.path.file_name().unwrap_or_default().to_string_lossy();
+                    let b_name = b.path.file_name().unwrap_or_default().to_string_lossy();
+                    match self.sort_direction {
+                        SortDirection::Ascending => a_name.cmp(&b_name),
+                        SortDirection::Descending => b_name.cmp(&a_name),
+                    }
+                });
+            }
+            SortColumn::Tokens => {
+                self.file_list.sort_by(|a, b| {
+                    match self.sort_direction {
+                        SortDirection::Ascending => a.tokens.cmp(&b.tokens),
+                        SortDirection::Descending => b.tokens.cmp(&a.tokens),
+                    }
+                });
+            }
+        }
+    }
 
     /// Checks for results from background operations
     fn check_background_operations(&mut self) {
@@ -315,7 +431,10 @@ impl GitScrollApp {
                     self.directory_structure = Some(root_entry.clone());
                     
                     // Update the visualizer
-                    self.visualizer.set_root_entry(root_entry);
+                    self.visualizer.set_root_entry(root_entry.clone());
+                    
+                    // Populate file list
+                    self.populate_file_list(&root_entry);
                     
                     // Update state
                     self.status_message = String::from("Repository parsed successfully");
@@ -401,41 +520,82 @@ impl eframe::App for GitScrollApp {
             if self.directory_structure.is_none() {
                 self.ui_handler.render_empty_state(ui);
             } else {
-                // Zoom controls
-                let (zoom_in, zoom_out) = self.ui_handler.render_zoom_controls(ui);
-                
-                // Define the visualization area
-                let visualization_rect = egui::Rect::from_min_size(
-                    ui.min_rect().min,
-                    egui::vec2(ui.available_width(), ui.available_height() - 20.0)
-                );
-                ui.allocate_rect(visualization_rect, egui::Sense::click_and_drag());
-                
-                if zoom_in {
-                    self.handle_zoom(true, visualization_rect);
-                }
-                
-                if zoom_out {
-                    self.handle_zoom(false, visualization_rect);
-                }
-                
-                // Generate squares with the current visualization rectangle
-                self.visualizer.generate_squares(visualization_rect);
-                
-                // Handle mouse interaction
-                let pointer_pos = ctx.pointer_hover_pos();
-                let clicked = ctx.input(|i| i.pointer.primary_clicked());
-                self.visualizer.handle_interaction(ui, pointer_pos, clicked);
-                
-                // Update animation state with current time
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs_f64();
-                self.visualizer.update_animation(now);
-                
-                // Render visualization with the visualization rectangle
-                self.visualizer.render(ui, visualization_rect);
+                ui.heading("File List");
+
+                let text_style = egui::TextStyle::Body;
+                let row_height = ui.text_style_height(&text_style);
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let table = egui::TableBuilder::new(ui)
+                        .striped(true)
+                        .column(egui::Column::auto().at_least(50.0))
+                        .column(egui::Column::remainder().at_least(200.0))
+                        .column(egui::Column::auto().at_least(100.0))
+                        .header(20.0, |mut header| {
+                            header.col(|ui| {
+                                if ui.button("Number").clicked() {
+                                    self.sort_column = SortColumn::Index;
+                                    self.sort_direction = match self.sort_direction {
+                                        SortDirection::Ascending => SortDirection::Descending,
+                                        SortDirection::Descending => SortDirection::Ascending,
+                                    };
+                                    self.sort_file_list();
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("File Name").clicked() {
+                                    self.sort_column = SortColumn::Name;
+                                    self.sort_direction = match self.sort_direction {
+                                        SortDirection::Ascending => SortDirection::Descending,
+                                        SortDirection::Descending => SortDirection::Ascending,
+                                    };
+                                    self.sort_file_list();
+                                }
+                            });
+                            header.col(|ui| {
+                                if ui.button("Token Count").clicked() {
+                                    self.sort_column = SortColumn::Tokens;
+                                    self.sort_direction = match self.sort_direction {
+                                        SortDirection::Ascending => SortDirection::Descending,
+                                        SortDirection::Descending => SortDirection::Ascending,
+                                    };
+                                    self.sort_file_list();
+                                }
+                            });
+                        });
+
+                    table.body(|mut body| {
+                        // File rows
+                        for file in &self.file_list {
+                            body.row(row_height, |mut row| {
+                                row.col(|ui| {
+                                    ui.label(file.index.to_string());
+                                });
+                                row.col(|ui| {
+                                    ui.label(file.path.to_string_lossy());
+                                });
+                                row.col(|ui| {
+                                    ui.label(file.tokens.to_string());
+                                });
+                            });
+                        }
+
+                        // Total row
+                        let total_files = self.file_list.len();
+                        let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
+                        body.row(row_height, |mut row| {
+                            row.col(|ui| {
+                                ui.label(""); // Empty cell
+                            });
+                            row.col(|ui| {
+                                ui.strong(format!("Total: {} files", total_files));
+                            });
+                            row.col(|ui| {
+                                ui.strong(total_tokens.to_string());
+                            });
+                        });
+                    });
+                });
             }
         });
     }
@@ -444,6 +604,7 @@ impl eframe::App for GitScrollApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     
     #[test]
     fn test_validate_git_url() {
@@ -459,5 +620,51 @@ mod tests {
         
         // Test invalid URLs
         assert!(!app.validate_git_url("invalid-url")); // No protocol or path format
+    }
+    
+    #[test]
+    fn test_token_count() {
+        // Create a temporary file for testing
+        let temp_file = std::env::temp_dir().join("test_token_count.txt");
+        fs::write(&temp_file, "hello world this is a test").unwrap();
+        
+        // Count tokens
+        let count = count_tokens(&temp_file);
+        assert_eq!(count, 5); // 5 words in the test string
+        
+        // Clean up
+        fs::remove_file(temp_file).unwrap();
+    }
+    
+    #[test]
+    fn test_sorting() {
+        // Create test file info entries
+        let files = vec![
+            FileInfo { index: 0, path: PathBuf::from("a.txt"), tokens: 10 },
+            FileInfo { index: 1, path: PathBuf::from("b.txt"), tokens: 5 },
+            FileInfo { index: 2, path: PathBuf::from("c.txt"), tokens: 15 },
+        ];
+        
+        // Test sorting by tokens ascending
+        let mut app = GitScrollApp::new();
+        app.file_list = files.clone();
+        app.sort_column = SortColumn::Tokens;
+        app.sort_direction = SortDirection::Ascending;
+        app.sort_file_list();
+        assert_eq!(app.file_list[0].tokens, 5);
+        assert_eq!(app.file_list[2].tokens, 15);
+        
+        // Test sorting by tokens descending
+        app.sort_direction = SortDirection::Descending;
+        app.sort_file_list();
+        assert_eq!(app.file_list[0].tokens, 15);
+        assert_eq!(app.file_list[2].tokens, 5);
+        
+        // Test sorting by name
+        app.sort_column = SortColumn::Name;
+        app.sort_direction = SortDirection::Ascending;
+        app.sort_file_list();
+        assert_eq!(app.file_list[0].path.file_name().unwrap().to_str().unwrap(), "a.txt");
+        assert_eq!(app.file_list[2].path.file_name().unwrap().to_str().unwrap(), "c.txt");
     }
 }
