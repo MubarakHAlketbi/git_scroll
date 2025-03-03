@@ -575,60 +575,96 @@ impl eframe::App for GitScrollApp {
         // Check for results from background operations
         self.check_background_operations(ctx);
         
-        // Top panel for URL input and controls with improved layout
+        // Top panel for URL input and controls with adaptive layout
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.add_space(8.0); // Increased spacing for better visual balance
-            
+            ui.add_space(8.0); // Padding at the top
+
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("Git URL:").strong());
-                
-                // Calculate available width for the URL input
-                let available_width = ui.available_width() - 260.0; // Space for buttons and checkbox
-                
-                // Add URL input with dynamic width
+                // Fixed widths for buttons and checkbox
+                let clone_button_width = 80.0;
+                let clear_button_width = 60.0;
+                let theme_button_width = 60.0;
+                let checkbox_width = 120.0; // Approximate width for "Keep Repository" checkbox
+                let spacing = 8.0;
+                let label_width = 60.0; // Approximate width for "Git URL:" label
+
+                // Git URL label - simple approach with consistent height
+                ui.add_sized(
+                    [label_width, 28.0], // Same height as other elements
+                    egui::Label::new(egui::RichText::new("Git URL:").strong())
+                );
+
+                // Fixed widths for buttons and checkbox
+                let clone_button_width = 80.0;
+                let clear_button_width = 60.0;
+                let theme_button_width = 60.0;
+                let checkbox_width = 120.0; // Approximate width for "Keep Repository" checkbox
+                let spacing = 8.0;
+
+                // Calculate total fixed width (label + buttons + checkbox + spacings)
+                let total_fixed_width = label_width
+                    + clone_button_width
+                    + checkbox_width
+                    + clear_button_width
+                    + theme_button_width
+                    + (spacing * 5.0); // Spaces between elements
+
+                // Set minimum URL input width
+                let min_url_width = 200.0;
+
+                // Calculate URL width directly - this ensures it grows immediately with window expansion
+                let url_width = (ui.available_width() - total_fixed_width).max(min_url_width);
+
+                // URL input with flexible width
                 let response = ui.add_sized(
-                    [available_width.max(300.0), 28.0],
+                    [url_width, 28.0],
                     egui::TextEdit::singleline(&mut self.git_url)
                         .hint_text("Enter repository URL...")
                 );
-                
-                ui.add_space(8.0);
-                
-                // Clone button with improved styling
+
+                ui.add_space(spacing);
+
+                // Clone button
                 if ui.add_enabled(
                     !self.is_cloning && !self.git_url.is_empty(),
                     egui::Button::new(
                         egui::RichText::new(if self.is_cloning { "Cloning..." } else { "Clone" })
-                        .strong()
+                            .strong()
                     )
-                    .min_size(egui::vec2(80.0, 28.0))
+                    .min_size(egui::vec2(clone_button_width, 28.0))
                 ).clicked() {
                     self.handle_clone_button();
                 }
-                
-                ui.add_space(8.0);
+
+                ui.add_space(spacing);
+
+                // Keep Repository checkbox
                 ui.checkbox(&mut self.keep_repository, "Keep Repository");
-                
-                ui.add_space(8.0);
+
+                ui.add_space(spacing);
+
+                // Clear button
                 if ui.add(
                     egui::Button::new(egui::RichText::new("Clear").strong())
-                    .min_size(egui::vec2(60.0, 28.0))
+                        .min_size(egui::vec2(clear_button_width, 28.0))
                 ).clicked() {
                     self.clear_repository();
                 }
-                
-                ui.add_space(8.0);
+
+                ui.add_space(spacing);
+
+                // Theme toggle button
                 if ui.add(
                     egui::Button::new(
                         if self.ui_handler.is_dark_mode() { "Light" } else { "Dark" }
                     )
-                    .min_size(egui::vec2(60.0, 28.0))
+                    .min_size(egui::vec2(theme_button_width, 28.0))
                 ).clicked() {
                     self.toggle_dark_mode();
                 }
             });
-            
-            ui.add_space(8.0); // Increased spacing for better visual balance
+
+            ui.add_space(8.0); // Padding at the bottom
         });
         
         // Controls panel removed - consolidated into central panel
