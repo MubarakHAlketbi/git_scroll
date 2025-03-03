@@ -1,6 +1,7 @@
 use eframe::egui;
 use std::time::Duration;
 use egui::LayerId;
+use std::ops::Add;
 
 /// Handles UI components and interactions
 pub struct UiHandler {
@@ -47,10 +48,15 @@ impl UiHandler {
             ui.label(egui::RichText::new("Git URL:").strong());
             
             // URL text field with placeholder - improved height and width
+            // Use available width minus space for other controls to prevent clipping
+            let available_width = ui.available_width();
+            let other_controls_width = 300.0; // Approximate width for other controls
+            let url_width = (available_width - other_controls_width).max(300.0);
+            
             let _response = ui.add(
                 egui::TextEdit::singleline(git_url)
                     .hint_text("Enter repository URL...")
-                    .desired_width(400.0) // Limit width to prevent clipping
+                    .desired_width(url_width) // Dynamic width based on available space
                     .min_size(egui::vec2(0.0, 28.0)) // Set minimum height
             );
             
@@ -125,56 +131,70 @@ impl UiHandler {
     ) -> bool {
         let mut changed = false;
 
-        egui::Grid::new("controls_grid")
-            .num_columns(3)
-            .spacing([10.0, 5.0])
-            .show(ui, |ui| {
-                // Sort column
-                ui.label(egui::RichText::new("Sort:").strong());
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(*sort_column == super::app::SortColumn::Index, "Index").clicked() {
-                        *sort_column = super::app::SortColumn::Index;
-                        changed = true;
-                    }
-                    if ui.selectable_label(*sort_column == super::app::SortColumn::Name, "Name").clicked() {
-                        *sort_column = super::app::SortColumn::Name;
-                        changed = true;
-                    }
-                    if ui.selectable_label(*sort_column == super::app::SortColumn::Tokens, "Tokens").clicked() {
-                        *sort_column = super::app::SortColumn::Tokens;
-                        changed = true;
-                    }
+        // Create a container with consistent spacing and alignment
+        ui.horizontal(|ui| {
+            // Calculate available width and divide it evenly
+            let available_width = ui.available_width();
+            let section_width = (available_width / 3.0).min(250.0);
+            
+            // Sort column section
+            ui.group(|ui| {
+                ui.set_width(section_width);
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Sort By").strong());
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(*sort_column == super::app::SortColumn::Index, "Index").clicked() {
+                            *sort_column = super::app::SortColumn::Index;
+                            changed = true;
+                        }
+                        if ui.selectable_label(*sort_column == super::app::SortColumn::Name, "Name").clicked() {
+                            *sort_column = super::app::SortColumn::Name;
+                            changed = true;
+                        }
+                        if ui.selectable_label(*sort_column == super::app::SortColumn::Tokens, "Tokens").clicked() {
+                            *sort_column = super::app::SortColumn::Tokens;
+                            changed = true;
+                        }
+                    });
                 });
-                ui.end_row();
-
-                // Sort direction
-                ui.label(egui::RichText::new("Direction:").strong());
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(*sort_direction == super::app::SortDirection::Ascending, "↑ Asc").clicked() {
-                        *sort_direction = super::app::SortDirection::Ascending;
-                        changed = true;
-                    }
-                    if ui.selectable_label(*sort_direction == super::app::SortDirection::Descending, "↓ Desc").clicked() {
-                        *sort_direction = super::app::SortDirection::Descending;
-                        changed = true;
-                    }
-                });
-                ui.end_row();
-
-                // Filter
-                ui.label(egui::RichText::new("Filter:").strong());
-                let response = ui.add(
-                    egui::TextEdit::singleline(filter_pattern)
-                        .hint_text("Filter files...")
-                        .desired_width(200.0)
-                        .min_size(egui::vec2(0.0, 24.0))
-                );
-                if response.changed() {
-                    ui.ctx().request_repaint_after(Duration::from_millis(300));
-                    changed = true;
-                }
-                ui.end_row();
             });
+            
+            // Sort direction section
+            ui.group(|ui| {
+                ui.set_width(section_width);
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Direction").strong());
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(*sort_direction == super::app::SortDirection::Ascending, "↑ Ascending").clicked() {
+                            *sort_direction = super::app::SortDirection::Ascending;
+                            changed = true;
+                        }
+                        if ui.selectable_label(*sort_direction == super::app::SortDirection::Descending, "↓ Descending").clicked() {
+                            *sort_direction = super::app::SortDirection::Descending;
+                            changed = true;
+                        }
+                    });
+                });
+            });
+            
+            // Filter section
+            ui.group(|ui| {
+                ui.set_width(section_width);
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Filter").strong());
+                    let response = ui.add(
+                        egui::TextEdit::singleline(filter_pattern)
+                            .hint_text("Filter files...")
+                            .desired_width(section_width - 20.0)
+                            .min_size(egui::vec2(0.0, 24.0))
+                    );
+                    if response.changed() {
+                        ui.ctx().request_repaint_after(Duration::from_millis(300));
+                        changed = true;
+                    }
+                });
+            });
+        });
 
         changed
     }
@@ -186,35 +206,83 @@ impl UiHandler {
     /// * `status_message` - The status message to display
     /// * `is_loading_tokens` - Whether tokens are currently being counted
     pub fn render_status_bar(&self, ui: &mut egui::Ui, status_message: &str, is_loading_tokens: bool) {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Status:").strong());
-            
-            // Status message with different styling based on loading state
-            if self.is_loading {
-                ui.colored_label(egui::Color32::from_rgb(100, 150, 255), status_message);
-                
-                // Add a progress bar when loading
-                if self.progress > 0.0 {
-                    ui.add(egui::ProgressBar::new(self.progress)
-                        .desired_width(100.0)
-                        .animate(true)
-                    );
-                } else {
-                    // Use spinner when progress is indeterminate
-                    ui.spinner();
-                }
-            } else if is_loading_tokens {
-                ui.colored_label(egui::Color32::from_rgb(100, 150, 255), "Counting tokens...");
-                ui.spinner();
-            } else if status_message.contains("error") || status_message.contains("fail") {
-                // Red for errors
-                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), status_message);
-            } else if status_message.contains("success") {
-                // Green for success
-                ui.colored_label(egui::Color32::from_rgb(100, 200, 100), status_message);
+        // Create a frame for the status bar with a subtle background
+        let frame = egui::Frame::NONE
+            .fill(if self.dark_mode {
+                egui::Color32::from_rgb(40, 40, 45)
             } else {
-                ui.label(status_message);
-            }
+                egui::Color32::from_rgb(240, 240, 245)
+            })
+            .inner_margin(egui::vec2(8.0, 4.0))
+            .stroke(egui::Stroke::new(
+                1.0,
+                if self.dark_mode {
+                    egui::Color32::from_rgb(60, 60, 70)
+                } else {
+                    egui::Color32::from_rgb(200, 200, 210)
+                }
+            ));
+        
+        frame.show(ui, |ui| {
+            ui.horizontal(|ui| {
+                // Status indicator (colored dot)
+                let status_color = if self.is_loading || is_loading_tokens {
+                    egui::Color32::from_rgb(100, 150, 255) // Blue for loading
+                } else if status_message.contains("error") || status_message.contains("fail") {
+                    egui::Color32::from_rgb(255, 100, 100) // Red for errors
+                } else if status_message.contains("success") {
+                    egui::Color32::from_rgb(100, 200, 100) // Green for success
+                } else {
+                    if self.dark_mode {
+                        egui::Color32::from_rgb(180, 180, 180) // Light gray for normal status in dark mode
+                    } else {
+                        egui::Color32::from_rgb(100, 100, 100) // Dark gray for normal status in light mode
+                    }
+                };
+                
+                // Draw status indicator dot
+                let dot_size = 8.0;
+                let dot_rect = egui::Rect::from_center_size(
+                    ui.cursor().min + egui::vec2(dot_size/2.0 + 4.0, ui.spacing().interact_size.y / 2.0),
+                    egui::vec2(dot_size, dot_size)
+                );
+                ui.painter().circle_filled(dot_rect.center(), dot_size/2.0, status_color);
+                ui.add_space(dot_size + 8.0);
+                
+                // Status message with appropriate styling
+                let display_message = if self.is_loading {
+                    status_message
+                } else if is_loading_tokens {
+                    "Counting tokens..."
+                } else {
+                    status_message
+                };
+                
+                ui.colored_label(status_color, display_message);
+                
+                // Add loading indicators
+                if self.is_loading || is_loading_tokens {
+                    ui.add_space(8.0);
+                    
+                    if self.progress > 0.0 && self.is_loading {
+                        // Use progress bar when we have progress information
+                        ui.add(egui::ProgressBar::new(self.progress)
+                            .desired_width(100.0)
+                            .animate(true)
+                        );
+                    } else {
+                        // Use spinner for indeterminate progress
+                        ui.spinner();
+                    }
+                }
+                
+                // Push remaining elements to the right
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Add a timestamp
+                    let time = chrono::Local::now().format("%H:%M:%S").to_string();
+                    ui.weak(time);
+                });
+            });
         });
     }
     

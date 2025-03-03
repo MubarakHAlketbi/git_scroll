@@ -78,6 +78,10 @@ pub struct GitScrollApp {
     // UI state
     show_stats_panel: bool,
     filter_pattern: String,
+    show_advanced_filters: bool,
+    filter_extension: String,
+    filter_token_min: usize,
+    filter_token_max: usize,
     
     // File list state
     file_list: Vec<FileInfo>,
@@ -87,6 +91,7 @@ pub struct GitScrollApp {
     
     // Table UI state
     column_widths: [f32; 3], // Widths for Index, Name, Tokens columns
+    current_page: usize,     // Current page for pagination
     
     // Background processing channels
     clone_receiver: mpsc::Receiver<Result<PathBuf, String>>,
@@ -121,6 +126,10 @@ impl GitScrollApp {
             // UI state
             show_stats_panel: true,
             filter_pattern: String::new(),
+            show_advanced_filters: false,
+            filter_extension: String::new(),
+            filter_token_min: 0,
+            filter_token_max: 0,
             
             // File list state
             file_list: Vec::new(),
@@ -130,6 +139,7 @@ impl GitScrollApp {
             
             // Table UI state
             column_widths: [60.0, 400.0, 100.0], // Default widths for columns
+            current_page: 0,                     // Start at first page
             
             // Background processing channels
             clone_receiver,
@@ -252,6 +262,30 @@ impl GitScrollApp {
             ui.label(format!("Total Text Files: {}", total_files));
             ui.label(format!("Total Tokens: {}", total_tokens));
             ui.label(format!("Average Tokens per File: {}", avg_tokens));
+            
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+            
+            // Add token count legend
+            ui.label("Token Count Legend:");
+            ui.horizontal(|ui| {
+                // Calculate max tokens for color scaling
+                let max_tokens = self.file_list.iter()
+                    .map(|f| f.tokens)
+                    .max()
+                    .unwrap_or(1);
+                
+                let low_color = crate::ui::style::token_count_color(0, max_tokens, self.ui_handler.is_dark_mode());
+                let mid_color = crate::ui::style::token_count_color(max_tokens / 2, max_tokens, self.ui_handler.is_dark_mode());
+                let high_color = crate::ui::style::token_count_color(max_tokens, max_tokens, self.ui_handler.is_dark_mode());
+                
+                ui.label(egui::RichText::new("Low").color(low_color));
+                ui.label(" → ");
+                ui.label(egui::RichText::new("Medium").color(mid_color));
+                ui.label(" → ");
+                ui.label(egui::RichText::new("High").color(high_color));
+            });
             
             ui.add_space(10.0);
             ui.separator();
@@ -598,8 +632,69 @@ impl eframe::App for GitScrollApp {
                 // Empty state when no repository is loaded
                 self.ui_handler.render_empty_state(ui, &mut self.git_url);
             } else {
-                // Show file list heading
-                ui.heading("Repository Files");
+                // File list section with search bar
+                ui.horizontal(|ui| {
+                    ui.heading("Repository Files");
+                    
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Add export button
+                        if ui.button("Export to CSV").clicked() {
+                            self.export_to_csv();
+                        }
+                    });
+                });
+                
+                // Add search bar
+                ui.horizontal(|ui| {
+                    ui.label("Filter:");
+                    let mut filter_text = self.filter_pattern.clone();
+                    if ui.add(
+                        egui::TextEdit::singleline(&mut filter_text)
+                            .desired_width(300.0)
+                            .hint_text("Filter files...")
+                    ).changed() {
+                        self.handle_filter_change(filter_text);
+                    }
+                    
+                    // Add advanced filter options
+                    if ui.button("Advanced Filters").clicked() {
+                        self.show_advanced_filters = !self.show_advanced_filters;
+                    }
+                });
+                
+                // Show advanced filters if enabled
+                if self.show_advanced_filters {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Extension:");
+                            let mut extension = self.filter_extension.clone();
+                            if ui.text_edit_singleline(&mut extension).changed() {
+                                self.filter_extension = extension;
+                                self.apply_advanced_filters();
+                            }
+                            
+                            ui.separator();
+                            
+                            ui.label("Min Tokens:");
+                            let mut min_tokens = self.filter_token_min.to_string();
+                            if ui.text_edit_singleline(&mut min_tokens).changed() {
+                                if let Ok(value) = min_tokens.parse::<usize>() {
+                                    self.filter_token_min = value;
+                                    self.apply_advanced_filters();
+                                }
+                            }
+                            
+                            ui.label("Max Tokens:");
+                            let mut max_tokens = self.filter_token_max.to_string();
+                            if ui.text_edit_singleline(&mut max_tokens).changed() {
+                                if let Ok(value) = max_tokens.parse::<usize>() {
+                                    self.filter_token_max = value;
+                                    self.apply_advanced_filters();
+                                }
+                            }
+                        });
+                    });
+                }
                 
                 ui.add_space(8.0);
                 
@@ -616,8 +711,18 @@ impl eframe::App for GitScrollApp {
                 // Get header color
                 let header_color = crate::ui::style::header_color(self.ui_handler.is_dark_mode());
                 
-                // File list table
-                egui::ScrollArea::vertical().show(ui, |ui| {
+                // Calculate pagination
+                let items_per_page = 50;
+                let total_pages = (self.file_list.len() + items_per_page - 1) / items_per_page;
+                let start_idx = self.current_page * items_per_page;
+                let end_idx = (start_idx + items_per_page).min(self.file_list.len());
+                let visible_items = end_idx - start_idx;
+                
+                // File list table with virtual scrolling for better performance
+                let row_height = 24.0; // Estimated height of each row
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .show_rows(ui, row_height, visible_items, |ui, row_range| {
                     // Table header with custom styling
                     let header_frame = egui::Frame::default()
                         .fill(header_color)
@@ -635,21 +740,58 @@ impl eframe::App for GitScrollApp {
                                 ];
                                 
                                 for (i, (text, col, width)) in headers.iter().enumerate() {
-                                    let sort_indicator = if self.sort_column == *col {
+                                    let is_sorted = self.sort_column == *col;
+                                    let sort_indicator = if is_sorted {
                                         if self.sort_direction == SortDirection::Ascending { "↑" } else { "↓" }
                                     } else { "" };
                                     
-                                    let header_text = format!("{} {}", text, sort_indicator);
-                                    ui.add_sized([*width, 0.0], egui::Label::new(egui::RichText::new(header_text).strong()));
+                                    // Display headers as non-clickable labels with sort indicators
+                                    ui.add_sized(
+                                        [*width, 30.0],
+                                        egui::Label::new(
+                                            egui::RichText::new(format!("{} {}", text, sort_indicator)).strong()
+                                        )
+                                    );
                                     
                                     // Add resize handle between columns
                                     if i < 2 { // Only between columns
-                                        // Create a small draggable area for resizing
+                                        // Create a visible draggable area for resizing
                                         let resize_id = ui.id().with(("resize", i));
+                                        
+                                        // Make the resize handle more visible
+                                        let resize_width = 8.0;
+                                        // Import std::ops::Add for Pos2
+                                        use std::ops::Add;
+                                        
                                         let resize_rect = egui::Rect::from_min_size(
-                                            ui.cursor().min,
-                                            egui::vec2(4.0, 20.0)
+                                            ui.cursor().min + egui::vec2(-resize_width/2.0, 0.0),
+                                            egui::vec2(resize_width, ui.available_height().min(30.0))
                                         );
+                                        
+                                        // Draw a visible handle
+                                        if ui.is_rect_visible(resize_rect) {
+                                            // Get the response from interact to determine hover/active state
+                                            let resize_response = ui.interact(
+                                                resize_rect,
+                                                resize_id,
+                                                egui::Sense::drag()
+                                            );
+                                            
+                                            // Determine stroke based on hover/active state
+                                            let stroke = if resize_response.hovered() || resize_response.dragged() {
+                                                egui::Stroke::new(2.0, egui::Color32::from_rgb(100, 150, 255))
+                                            } else {
+                                                egui::Stroke::new(1.0, egui::Color32::from_gray(160))
+                                            };
+                                            
+                                            ui.painter().line_segment(
+                                                [
+                                                    resize_rect.center_top(),
+                                                    resize_rect.center_bottom(),
+                                                ],
+                                                stroke
+                                            );
+                                        }
                                         
                                         let resize_response = ui.interact(
                                             resize_rect,
@@ -659,8 +801,17 @@ impl eframe::App for GitScrollApp {
                                         
                                         if resize_response.dragged() {
                                             let delta = ui.input(|i| i.pointer.delta().x);
+                                            
+                                            // Adjust both columns to maintain total width
                                             self.column_widths[i] += delta;
-                                            self.column_widths[i] = self.column_widths[i].clamp(50.0, 600.0);
+                                            self.column_widths[i+1] -= delta;
+                                            
+                                            // Ensure minimum widths
+                                            self.column_widths[i] = self.column_widths[i].max(50.0);
+                                            self.column_widths[i+1] = self.column_widths[i+1].max(50.0);
+                                            
+                                            // Request repaint for smooth resizing
+                                            ui.ctx().request_repaint();
                                         }
                                         
                                         // Show resize cursor on hover
@@ -678,64 +829,188 @@ impl eframe::App for GitScrollApp {
                     egui::Grid::new("file_list_grid")
                         .num_columns(3)
                         .spacing([8.0, 4.0])
-                        .striped(false) // We'll handle striping manually
+                        .striped(true) // Use built-in striping
                         .show(ui, |ui| {
-                            // File rows
-                            for (i, file) in self.file_list.iter().enumerate() {
-                                // Apply row background color based on index (striping)
-                                let row_color = if i % 2 == 0 { even_row_color } else { odd_row_color };
-                                let row_frame = egui::Frame::default()
-                                    .fill(row_color)
-                                    .inner_margin(Margin::symmetric(8, 4));
-                                
-                                row_frame.show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        // Index column with dynamic width
+                            // Only render visible rows for the current page
+                            for relative_idx in row_range {
+                                let absolute_idx = start_idx + relative_idx;
+                                if absolute_idx >= self.file_list.len() {
+                                    break;
+                                }
+                                let file = &self.file_list[absolute_idx];
+                                let i = absolute_idx; // For compatibility with existing code
+                                ui.horizontal(|ui| {
+                                    // Add checkbox for selection
+                                    let mut selected = file.selected;
+                                    if ui.checkbox(&mut selected, "").changed() {
+                                        // Clone the index to avoid borrowing issues
+                                        let file_index = file.index;
+                                        
+                                        // Update the selection state after the UI closure
+                                        ui.ctx().data_mut(|data| {
+                                            data.insert_temp(egui::Id::new("file_selection_change"), (file_index, selected));
+                                        });
+                                        
+                                        // Handle shift-click for multi-selection
+                                        if ui.input(|i| i.modifiers.shift) && selected {
+                                            if let Some(last_selected) = self.file_list.iter().rposition(|f| f.selected && f.index != file.index) {
+                                                let clicked_idx = i;
+                                                let range = if clicked_idx < last_selected {
+                                                    clicked_idx..=last_selected
+                                                } else {
+                                                    last_selected..=clicked_idx
+                                                };
+                                                for idx in range {
+                                                    if idx < self.file_list.len() {
+                                                        self.file_list[idx].selected = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Index column with dynamic width - right aligned
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         ui.add_sized([self.column_widths[0], 20.0], egui::Label::new(file.index.to_string()));
+                                    });
+                                    
+                                    // File path column with tree structure and color coding
+                                    let path_str = file.path.to_string_lossy();
+                                    
+                                    // Calculate the file's depth in the directory structure
+                                    let path_components: Vec<&str> = path_str.split(['/', '\\']).collect();
+                                    let depth = path_components.len().saturating_sub(1);
+                                    
+                                    // Get file extension for color coding
+                                    let extension = file.path.extension()
+                                        .and_then(|e| e.to_str())
+                                        .unwrap_or("");
+                                    
+                                    // Determine file type color based on extension
+                                    let file_color = match extension.to_lowercase().as_str() {
+                                        "rs" => egui::Color32::from_rgb(255, 160, 80),  // Rust files - orange
+                                        "js" | "ts" => egui::Color32::from_rgb(240, 220, 80),  // JavaScript/TypeScript - yellow
+                                        "py" => egui::Color32::from_rgb(80, 160, 255),  // Python - blue
+                                        "html" | "css" => egui::Color32::from_rgb(100, 200, 100),  // Web files - green
+                                        "md" | "txt" => egui::Color32::from_rgb(200, 200, 200),  // Documentation - light gray
+                                        "json" | "toml" | "yaml" => egui::Color32::from_rgb(200, 150, 255),  // Config files - purple
+                                        _ => if self.ui_handler.is_dark_mode() {
+                                            egui::Color32::from_rgb(180, 180, 180)  // Default - light gray
+                                        } else {
+                                            egui::Color32::from_rgb(80, 80, 80)  // Default - dark gray
+                                        }
+                                    };
+                                    
+                                    // Get just the file name for display
+                                    let file_name = file.path.file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_default();
+                                    
+                                    // Create indentation based on depth
+                                    let indent = "  ".repeat(depth);
+                                    
+                                    // Add tree structure character
+                                    let tree_prefix = if depth > 0 { "└─ " } else { "" };
+                                    
+                                    // Combine for display
+                                    let display_path = format!("{}{}{}", indent, tree_prefix, file_name);
+                                    
+                                    // Create the label with the file path
+                                    let path_label = ui.add_sized(
+                                        [self.column_widths[1], 20.0],
+                                        egui::Label::new(
+                                            egui::RichText::new(display_path)
+                                                .family(egui::FontFamily::Monospace)
+                                                .color(file_color)
+                                        )
+                                    );
+                                    
+                                    // Show full path on hover with extension info
+                                    if path_label.hovered() {
+                                        egui::show_tooltip(ui.ctx(), LayerId::background(), egui::Id::new("path_tooltip").with(i), |ui| {
+                                            let extension = file.path.extension()
+                                                .map_or("".to_string(), |e| format!(" ({})", e.to_string_lossy()));
+                                            ui.label(format!("{}{}", path_str, extension));
+                                        });
                                         
-                                        // File path column (truncated with tooltip)
-                                        let path_str = file.path.to_string_lossy();
-                                        let truncated_path = crate::ui::UiHandler::truncate_path(&path_str, 50);
-                                        
-                                        let path_label = ui.add_sized(
-                                            [self.column_widths[1], 20.0],
-                                            egui::Label::new(
-                                                egui::RichText::new(truncated_path)
-                                                    .family(egui::FontFamily::Monospace)
-                                            )
+                                        // Add context menu on right-click
+                                        if ui.input(|i| i.pointer.secondary_clicked()) {
+                                            // Store the file index for the context menu
+                                            let context_menu_id = ui.make_persistent_id("file_context_menu");
+                                            ui.memory_mut(|mem| mem.data.insert_temp(context_menu_id, i));
+                                            
+                                            // Show the context menu as a popup
+                                            let popup_id = ui.make_persistent_id("file_context_popup");
+                                            let popup_response = egui::popup::popup_below_widget(ui, popup_id, &path_label, egui::PopupCloseBehavior::CloseOnClickOutside, |ui: &mut egui::Ui| {
+                                                ui.set_min_width(150.0);
+                                                
+                                                let open_response = ui.button("Open File");
+                                                if open_response.clicked() {
+                                                    #[cfg(target_os = "windows")]
+                                                    {
+                                                        std::process::Command::new("cmd")
+                                                            .args(&["/c", "start", "", file.path.to_string_lossy().as_ref()])
+                                                            .spawn()
+                                                            .ok();
+                                                    }
+                                                    #[cfg(not(target_os = "windows"))]
+                                                    {
+                                                        std::process::Command::new("xdg-open")
+                                                            .arg(file.path.to_string_lossy().as_ref())
+                                                            .spawn()
+                                                            .ok();
+                                                    }
+                                                    // Close the popup when clicked
+                                                    ui.ctx().memory_mut(|mem| {
+                                                        mem.close_popup();
+                                                    });
+                                                }
+                                                
+                                                let copy_response = ui.button("Copy Path");
+                                                if copy_response.clicked() {
+                                                    ui.output_mut(|o| o.copied_text = file.path.to_string_lossy().to_string());
+                                                    // Close the popup when clicked
+                                                    ui.ctx().memory_mut(|mem| {
+                                                        mem.close_popup();
+                                                    });
+                                                }
+                                            });
+                                            
+                                            // Position the popup at the mouse position
+                                            if let Some(pos) = ui.ctx().pointer_interact_pos() {
+                                                ui.ctx().memory_mut(|mem| {
+                                                    mem.open_popup(popup_id);
+                                                });
+                                                
+                                                // Request a repaint to show the popup immediately
+                                                ui.ctx().request_repaint();
+                                            }
+                                        }
+                                    }
+                                    
+                                    // Token count column (right-aligned with background color)
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        // Create a colored background based on token count
+                                        let token_color = crate::ui::style::token_count_color(
+                                            file.tokens,
+                                            max_tokens,
+                                            self.ui_handler.is_dark_mode()
                                         );
                                         
-                                        // Show full path on hover
-                                        if path_label.hovered() {
-                                            egui::show_tooltip(ui.ctx(), LayerId::background(), egui::Id::new("path_tooltip").with(i), |ui| {
-                                                ui.label(path_str);
+                                        egui::Frame::default()
+                                            .fill(token_color)
+                                            .corner_radius(CornerRadius::same(4))
+                                            .inner_margin(Margin::symmetric(6, 2))
+                                            .show(ui, |ui| {
+                                                ui.add_sized(
+                                                    [self.column_widths[2], 20.0],
+                                                    egui::Label::new(
+                                                        egui::RichText::new(file.tokens.to_string())
+                                                            .strong()
+                                                            .family(egui::FontFamily::Monospace)
+                                                    )
+                                                );
                                             });
-                                        }
-                                        
-                                        // Token count column (right-aligned with background color)
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                            // Create a colored background based on token count
-                                            let token_color = crate::ui::style::token_count_color(
-                                                file.tokens,
-                                                max_tokens,
-                                                self.ui_handler.is_dark_mode()
-                                            );
-                                            
-                                            egui::Frame::default()
-                                                .fill(token_color)
-                                                .corner_radius(CornerRadius::same(4))
-                                                .inner_margin(Margin::symmetric(6, 2))
-                                                .show(ui, |ui| {
-                                                    ui.add_sized(
-                                                        [self.column_widths[2], 20.0],
-                                                        egui::Label::new(
-                                                            egui::RichText::new(file.tokens.to_string())
-                                                                .strong()
-                                                                .family(egui::FontFamily::Monospace)
-                                                        )
-                                                    );
-                                                });
-                                        });
                                     });
                                 });
                                 
@@ -743,7 +1018,9 @@ impl eframe::App for GitScrollApp {
                             }
                             
                             // Total row with custom styling
+                            let page_files = end_idx - start_idx;
                             let total_files = self.file_list.len();
+                            let page_tokens = self.file_list[start_idx..end_idx].iter().map(|f| f.tokens).sum::<usize>();
                             let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
                             
                             let total_frame = egui::Frame::default()
@@ -755,23 +1032,26 @@ impl eframe::App for GitScrollApp {
                                     // Empty index cell
                                     ui.add_sized([self.column_widths[0], 20.0], egui::Label::new(""));
                                     
-                                    // Total label
+                                    // Total label showing page and total counts
                                     ui.add_sized(
                                         [self.column_widths[1], 20.0],
                                         egui::Label::new(
-                                            egui::RichText::new(format!("Total: {} files", total_files))
-                                                .strong()
+                                            egui::RichText::new(
+                                                format!("Page: {} files | Total: {} files",
+                                                    page_files, total_files)
+                                            ).strong()
                                         )
                                     );
                                     
-                                    // Total tokens (right-aligned)
+                                    // Total tokens (right-aligned) showing page and total
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         ui.add_sized(
                                             [self.column_widths[2], 20.0],
                                             egui::Label::new(
-                                                egui::RichText::new(total_tokens.to_string())
-                                                    .strong()
-                                                    .family(egui::FontFamily::Monospace)
+                                                egui::RichText::new(
+                                                    format!("{} / {}", page_tokens, total_tokens)
+                                                ).strong()
+                                                 .family(egui::FontFamily::Monospace)
                                             )
                                         );
                                     });
@@ -781,6 +1061,51 @@ impl eframe::App for GitScrollApp {
                             ui.end_row();
                         });
                 });
+                
+                // Add pagination controls
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(5.0);
+                
+                let items_per_page = 50;
+                let total_pages = (self.file_list.len() + items_per_page - 1) / items_per_page;
+                
+                if total_pages > 1 {
+                    ui.horizontal(|ui| {
+                        ui.label("Page:");
+                        
+                        // Previous page button
+                        if ui.add_enabled(
+                            self.current_page > 0,
+                            egui::Button::new("◀ Previous")
+                        ).clicked() {
+                            self.current_page = self.current_page.saturating_sub(1);
+                        }
+                        
+                        // Page number indicator
+                        ui.label(format!("{} of {}", self.current_page + 1, total_pages));
+                        
+                        // Next page button
+                        if ui.add_enabled(
+                            self.current_page < total_pages - 1,
+                            egui::Button::new("Next ▶")
+                        ).clicked() {
+                            self.current_page = (self.current_page + 1).min(total_pages - 1);
+                        }
+                        
+                        // Jump to page
+                        ui.separator();
+                        ui.label("Go to:");
+                        let mut page_text = (self.current_page + 1).to_string();
+                        if ui.text_edit_singleline(&mut page_text).changed() {
+                            if let Ok(page) = page_text.parse::<usize>() {
+                                if page > 0 && page <= total_pages {
+                                    self.current_page = page - 1;
+                                }
+                            }
+                        }
+                    });
+                }
             }
         });
     }
@@ -801,6 +1126,7 @@ impl GitScrollApp {
         self.status_message = String::from("Ready");
         self.is_cloning = false;
         self.is_loading_tokens = false;
+        self.current_page = 0; // Reset to first page
         self.ui_handler.set_loading(false);
     }
     
@@ -808,6 +1134,82 @@ impl GitScrollApp {
     fn toggle_dark_mode(&mut self) {
         let current_mode = self.ui_handler.is_dark_mode();
         self.ui_handler.set_dark_mode(!current_mode);
+    }
+    
+    /// Applies advanced filters to the file list
+    fn apply_advanced_filters(&mut self) {
+        if let Some(root_entry) = &self.directory_structure {
+            // Get all files from the directory structure
+            let files = self.directory_parser.get_all_files(root_entry);
+            
+            // Create a new filtered list
+            let mut filtered_list = Vec::new();
+            
+            for (index, path) in files.iter().enumerate() {
+                // Check extension filter
+                let extension_match = self.filter_extension.is_empty() ||
+                    path.extension().map_or(false, |e| e.to_string_lossy().to_lowercase() == self.filter_extension.to_lowercase());
+                
+                // Find token count for this file
+                let tokens = self.file_list.iter()
+                    .find(|f| f.path == *path)
+                    .map_or(0, |f| f.tokens);
+                
+                // Check token range filters
+                let min_tokens_match = self.filter_token_min == 0 || tokens >= self.filter_token_min;
+                let max_tokens_match = self.filter_token_max == 0 || tokens <= self.filter_token_max;
+                
+                // Apply all filters
+                if extension_match && min_tokens_match && max_tokens_match {
+                    filtered_list.push(FileInfo {
+                        index,
+                        path: path.clone(),
+                        tokens,
+                        selected: false,
+                    });
+                }
+            }
+            
+            // Update the file list
+            self.file_list = filtered_list;
+            
+            // Reset to first page when filters change
+            self.current_page = 0;
+            
+            // Resort the list
+            self.sort_file_list();
+        }
+    }
+    
+    /// Exports the file list to a CSV file
+    fn export_to_csv(&self) {
+        if self.file_list.is_empty() {
+            return;
+        }
+        
+        // Create CSV content
+        let mut csv = String::from("Index,Path,Tokens\n");
+        
+        for file in &self.file_list {
+            csv.push_str(&format!(
+                "{},{},{}\n",
+                file.index,
+                file.path.to_string_lossy().replace(',', "\\,"), // Escape commas in paths
+                file.tokens
+            ));
+        }
+        
+        // Write to file
+        match std::fs::write("file_list.csv", csv) {
+            Ok(_) => {
+                // Update status message would go here if we had mutable access
+                println!("Exported to file_list.csv");
+            },
+            Err(e) => {
+                // Handle error
+                eprintln!("Failed to export: {}", e);
+            }
+        }
     }
 }
 
