@@ -101,11 +101,23 @@ impl UiHandler {
                 });
             }
             
-            // Theme toggle
-            if ui.add(egui::Button::new(
-                if self.dark_mode { "☀" } else { "🌙" }
-            )).clicked() {
-                // Toggle handled in app.rs
+            // Theme toggle with clear text and proper sizing
+            let theme_button = ui.add(egui::Button::new(
+                if self.dark_mode { "Light" } else { "Dark" }
+            ).min_size(egui::vec2(60.0, 28.0)));
+            
+            if theme_button.clicked() {
+                // Set a flag that will be checked in app.rs
+                ui.ctx().data_mut(|data| {
+                    data.insert_temp(egui::Id::new("theme_toggle_clicked"), true);
+                });
+            }
+            
+            // Add tooltip to theme button
+            if theme_button.hovered() {
+                egui::show_tooltip(ui.ctx(), LayerId::background(), egui::Id::new("theme_tooltip"), |ui| {
+                    ui.label(if self.dark_mode { "Switch to light mode" } else { "Switch to dark mode" });
+                });
             }
         });
         
@@ -275,13 +287,7 @@ impl UiHandler {
                         ui.spinner();
                     }
                 }
-                
-                // Push remaining elements to the right
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Add a timestamp
-                    let time = chrono::Local::now().format("%H:%M:%S").to_string();
-                    ui.weak(time);
-                });
+                // Removed timestamp as it's not necessary for the application
             });
         });
     }
@@ -718,32 +724,4 @@ mod tests {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    
-    // Note: UI tests are typically difficult to write as unit tests
-    // since they depend on rendering context. These tests are minimal.
-    
-    #[test]
-    fn test_ui_handler_creation() {
-        let handler = UiHandler::new();
-        assert!(!handler.is_loading);
-    }
-    
-    #[test]
-    fn test_loading_state() {
-        let mut handler = UiHandler::new();
-        
-        // Initially not loading
-        assert!(!handler.is_loading);
-        
-        // Set to loading
-        handler.set_loading(true);
-        assert!(handler.is_loading);
-        
-        // Set back to not loading
-        handler.set_loading(false);
-        assert!(!handler.is_loading);
-    }
-}
+// Removed duplicate test module

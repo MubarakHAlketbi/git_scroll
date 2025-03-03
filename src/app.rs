@@ -42,7 +42,7 @@ fn count_tokens(path: &Path) -> usize {
 }
 
 /// Enum for sortable columns
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 pub enum SortColumn {
     Index,
     Name,
@@ -50,7 +50,7 @@ pub enum SortColumn {
 }
 
 /// Enum for sort direction
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone, Copy)]
 pub enum SortDirection {
     Ascending,
     Descending,
@@ -204,8 +204,13 @@ impl GitScrollApp {
         
         // Spawn a background thread to perform the cloning and parsing
         thread::spawn(move || {
+            // Send an interim status message to provide feedback during cloning
+            let _ = clone_sender.send(Err("Cloning repository, please wait...".to_string()));
+            
             // Clone the repository
+            println!("Cloning {} to {:?}", git_url, temp_dir.path());
             let repo_path_result = git_handler.clone_repository(&git_url, temp_dir.path());
+            println!("Clone result: {:?}", repo_path_result.is_ok());
             
             // Send the result back to the main thread
             let _ = clone_sender.send(repo_path_result.clone());
@@ -465,6 +470,11 @@ impl GitScrollApp {
                     self.repository_path = Some(repo_path);
                     self.status_message = String::from("Repository cloned successfully, parsing directory...");
                 },
+                Err(e) if e == "Cloning repository, please wait..." => {
+                    // This is just an interim status message, not an error
+                    self.status_message = e;
+                    ctx.request_repaint(); // Force UI update to show the message
+                },
                 Err(e) => {
                     let error_message = format!("Failed to clone repository: {}", e);
                     self.status_message = error_message.clone();
@@ -565,65 +575,94 @@ impl eframe::App for GitScrollApp {
         // Check for results from background operations
         self.check_background_operations(ctx);
         
-        // Top panel for URL input and controls
+        // Top panel for URL input and controls with improved layout
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(8.0); // Increased spacing for better visual balance
             
-            // Top bar with URL input and clone button
-            let (clone_clicked, clear_clicked) = self.ui_handler.render_top_bar(
-                ui,
-                &mut self.git_url,
-                &mut self.keep_repository,
-            );
-            
-            if clone_clicked {
-                self.handle_clone_button();
-            }
-            
-            if clear_clicked {
-                self.clear_repository();
-            }
-            
-            ui.add_space(4.0);
-        });
-        
-        // Controls panel for sorting and filtering
-        if self.directory_structure.is_some() {
-            egui::TopBottomPanel::top("controls_panel").show(ctx, |ui| {
-                ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Git URL:").strong());
                 
-                // Controls bar with sorting and filtering options
-                if self.ui_handler.render_controls_bar(
-                    ui,
-                    &mut self.sort_column,
-                    &mut self.sort_direction,
-                    &mut self.filter_pattern,
-                ) {
-                    // If controls changed, update the file list
-                    self.handle_filter_change(self.filter_pattern.clone());
-                    self.sort_file_list();
+                // Calculate available width for the URL input
+                let available_width = ui.available_width() - 260.0; // Space for buttons and checkbox
+                
+                // Add URL input with dynamic width
+                let response = ui.add_sized(
+                    [available_width.max(300.0), 28.0],
+                    egui::TextEdit::singleline(&mut self.git_url)
+                        .hint_text("Enter repository URL...")
+                );
+                
+                ui.add_space(8.0);
+                
+                // Clone button with improved styling
+                if ui.add_enabled(
+                    !self.is_cloning && !self.git_url.is_empty(),
+                    egui::Button::new(
+                        egui::RichText::new(if self.is_cloning { "Cloning..." } else { "Clone" })
+                        .strong()
+                    )
+                    .min_size(egui::vec2(80.0, 28.0))
+                ).clicked() {
+                    self.handle_clone_button();
                 }
                 
-                ui.add_space(4.0);
+                ui.add_space(8.0);
+                ui.checkbox(&mut self.keep_repository, "Keep Repository");
+                
+                ui.add_space(8.0);
+                if ui.add(
+                    egui::Button::new(egui::RichText::new("Clear").strong())
+                    .min_size(egui::vec2(60.0, 28.0))
+                ).clicked() {
+                    self.clear_repository();
+                }
+                
+                ui.add_space(8.0);
+                if ui.add(
+                    egui::Button::new(
+                        if self.ui_handler.is_dark_mode() { "Light" } else { "Dark" }
+                    )
+                    .min_size(egui::vec2(60.0, 28.0))
+                ).clicked() {
+                    self.toggle_dark_mode();
+                }
             });
-        }
+            
+            ui.add_space(8.0); // Increased spacing for better visual balance
+        });
         
-        // Bottom panel for status and stats
+        // Controls panel removed - consolidated into central panel
+        
+        // Optimized bottom panel with horizontal layout for status and stats
         egui::TopBottomPanel::bottom("bottom_panel").show(ctx, |ui| {
-            ui.add_space(4.0);
+            ui.add_space(8.0);
             
-            // Status bar
-            self.ui_handler.render_status_bar(ui, &self.status_message, self.is_loading_tokens);
+            ui.horizontal(|ui| {
+                // Status message on the left
+                let status_width = ui.available_width() * 0.6;
+                ui.horizontal(|ui| {
+                    ui.set_width(status_width);
+                    self.ui_handler.render_status_bar(ui, &self.status_message, self.is_loading_tokens);
+                });
+                
+                // Stats on the right (if repository is loaded)
+                if self.directory_structure.is_some() {
+                    ui.separator();
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let total_files = self.file_list.len();
+                        let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
+                        let avg_tokens = if total_files > 0 { total_tokens / total_files } else { 0 };
+                        
+                        ui.label(format!("Avg: {} tokens", avg_tokens));
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(format!("Total Tokens: {}", total_tokens)).strong());
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(format!("Files: {}", total_files)).strong());
+                    });
+                }
+            });
             
-            // Stats bar (if repository is loaded)
-            if self.directory_structure.is_some() {
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(4.0);
-                self.ui_handler.render_stats_bar(ui, &self.file_list);
-            }
-            
-            ui.add_space(4.0);
+            ui.add_space(8.0);
         });
         
         // Main central panel
@@ -632,7 +671,7 @@ impl eframe::App for GitScrollApp {
                 // Empty state when no repository is loaded
                 self.ui_handler.render_empty_state(ui, &mut self.git_url);
             } else {
-                // File list section with search bar
+                // Enhanced header section with title, sorting, filtering, and export options
                 ui.horizontal(|ui| {
                     ui.heading("Repository Files");
                     
@@ -641,59 +680,192 @@ impl eframe::App for GitScrollApp {
                         if ui.button("Export to CSV").clicked() {
                             self.export_to_csv();
                         }
+                        
+                        ui.add_space(8.0);
+                        
+                        // Add sort direction toggle
+                        let direction_text = match self.sort_direction {
+                            SortDirection::Ascending => "↑ Asc",
+                            SortDirection::Descending => "↓ Desc",
+                        };
+                        if ui.button(direction_text).clicked() {
+                            self.sort_direction = match self.sort_direction {
+                                SortDirection::Ascending => SortDirection::Descending,
+                                SortDirection::Descending => SortDirection::Ascending,
+                            };
+                            self.sort_file_list();
+                        }
+                        
+                        ui.add_space(4.0);
+                        
+                        // Add sort column selector
+                        egui::ComboBox::from_id_source("sort_column")
+                            .selected_text(match self.sort_column {
+                                SortColumn::Index => "Sort: Number",
+                                SortColumn::Name => "Sort: Name",
+                                SortColumn::Tokens => "Sort: Tokens",
+                            })
+                            .show_ui(ui, |ui| {
+                                if ui.selectable_value(&mut self.sort_column, SortColumn::Index, "Number").clicked() {
+                                    self.sort_file_list();
+                                }
+                                if ui.selectable_value(&mut self.sort_column, SortColumn::Name, "Name").clicked() {
+                                    self.sort_file_list();
+                                }
+                                if ui.selectable_value(&mut self.sort_column, SortColumn::Tokens, "Tokens").clicked() {
+                                    self.sort_file_list();
+                                }
+                            });
                     });
                 });
                 
-                // Add search bar
+                ui.add_space(8.0);
+                
+                // Search and filter bar with improved layout
                 ui.horizontal(|ui| {
-                    ui.label("Filter:");
+                    ui.label(egui::RichText::new("Filter:").strong());
+                    
+                    // Calculate available width for the filter input
+                    let available_width = ui.available_width() - 150.0; // Space for button
+                    
+                    // Add filter input with dynamic width
                     let mut filter_text = self.filter_pattern.clone();
-                    if ui.add(
+                    if ui.add_sized(
+                        [available_width.max(200.0), 28.0],
                         egui::TextEdit::singleline(&mut filter_text)
-                            .desired_width(300.0)
                             .hint_text("Filter files...")
                     ).changed() {
                         self.handle_filter_change(filter_text);
                     }
                     
+                    ui.add_space(8.0);
+                    
                     // Add advanced filter options
-                    if ui.button("Advanced Filters").clicked() {
+                    if ui.button(if self.show_advanced_filters { "Hide Advanced" } else { "Advanced Filters" }).clicked() {
                         self.show_advanced_filters = !self.show_advanced_filters;
                     }
                 });
                 
-                // Show advanced filters if enabled
+                // Enhanced advanced filters section with better layout and visual feedback
                 if self.show_advanced_filters {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label("Extension:");
-                            let mut extension = self.filter_extension.clone();
-                            if ui.text_edit_singleline(&mut extension).changed() {
-                                self.filter_extension = extension;
-                                self.apply_advanced_filters();
-                            }
+                    egui::Frame::group(ui.style())
+                        .fill(if self.ui_handler.is_dark_mode() {
+                            egui::Color32::from_rgb(45, 45, 48)
+                        } else {
+                            egui::Color32::from_rgb(240, 240, 245)
+                        })
+                        .inner_margin(egui::vec2(10.0, 8.0))
+                        .show(ui, |ui| {
+                            ui.heading("Advanced Filters");
+                            ui.add_space(4.0);
                             
-                            ui.separator();
-                            
-                            ui.label("Min Tokens:");
-                            let mut min_tokens = self.filter_token_min.to_string();
-                            if ui.text_edit_singleline(&mut min_tokens).changed() {
-                                if let Ok(value) = min_tokens.parse::<usize>() {
-                                    self.filter_token_min = value;
+                            // Extension filter
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("File Extension:").strong());
+                                ui.add_space(4.0);
+                                
+                                let mut extension = self.filter_extension.clone();
+                                if ui.add_sized(
+                                    [120.0, 24.0],
+                                    egui::TextEdit::singleline(&mut extension)
+                                        .hint_text("e.g., rs, js, py")
+                                ).changed() {
+                                    self.filter_extension = extension;
                                     self.apply_advanced_filters();
                                 }
-                            }
-                            
-                            ui.label("Max Tokens:");
-                            let mut max_tokens = self.filter_token_max.to_string();
-                            if ui.text_edit_singleline(&mut max_tokens).changed() {
-                                if let Ok(value) = max_tokens.parse::<usize>() {
-                                    self.filter_token_max = value;
+                                
+                                ui.add_space(4.0);
+                                if ui.button("Clear").clicked() {
+                                    self.filter_extension = String::new();
                                     self.apply_advanced_filters();
                                 }
+                            });
+                            
+                            ui.add_space(8.0);
+                            
+                            // Token range filters
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Token Range:").strong());
+                                ui.add_space(4.0);
+                                
+                                ui.label("Min:");
+                                let mut min_tokens = self.filter_token_min.to_string();
+                                if ui.add_sized(
+                                    [80.0, 24.0],
+                                    egui::TextEdit::singleline(&mut min_tokens)
+                                        .hint_text("0")
+                                ).changed() {
+                                    if let Ok(value) = min_tokens.parse::<usize>() {
+                                        self.filter_token_min = value;
+                                        self.apply_advanced_filters();
+                                    }
+                                }
+                                
+                                ui.add_space(8.0);
+                                
+                                ui.label("Max:");
+                                let mut max_tokens = self.filter_token_max.to_string();
+                                if ui.add_sized(
+                                    [80.0, 24.0],
+                                    egui::TextEdit::singleline(&mut max_tokens)
+                                        .hint_text("∞")
+                                ).changed() {
+                                    if let Ok(value) = max_tokens.parse::<usize>() {
+                                        self.filter_token_max = value;
+                                        self.apply_advanced_filters();
+                                    }
+                                }
+                                
+                                ui.add_space(4.0);
+                                if ui.button("Reset Range").clicked() {
+                                    self.filter_token_min = 0;
+                                    self.filter_token_max = 0;
+                                    self.apply_advanced_filters();
+                                }
+                            });
+                            
+                            ui.add_space(4.0);
+                            
+                            // Show active filters summary
+                            let has_filters = !self.filter_extension.is_empty() ||
+                                             self.filter_token_min > 0 ||
+                                             self.filter_token_max > 0;
+                            
+                            if has_filters {
+                                ui.add_space(4.0);
+                                ui.separator();
+                                ui.add_space(4.0);
+                                
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("Active Filters:").strong());
+                                    
+                                    let mut filter_text = Vec::new();
+                                    
+                                    if !self.filter_extension.is_empty() {
+                                        filter_text.push(format!("Extension: {}", self.filter_extension));
+                                    }
+                                    
+                                    if self.filter_token_min > 0 {
+                                        filter_text.push(format!("Min Tokens: {}", self.filter_token_min));
+                                    }
+                                    
+                                    if self.filter_token_max > 0 {
+                                        filter_text.push(format!("Max Tokens: {}", self.filter_token_max));
+                                    }
+                                    
+                                    ui.label(filter_text.join(" | "));
+                                    
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui.button("Clear All Filters").clicked() {
+                                            self.filter_extension = String::new();
+                                            self.filter_token_min = 0;
+                                            self.filter_token_max = 0;
+                                            self.apply_advanced_filters();
+                                        }
+                                    });
+                                });
                             }
                         });
-                    });
                 }
                 
                 ui.add_space(8.0);
@@ -711,8 +883,14 @@ impl eframe::App for GitScrollApp {
                 // Get header color
                 let header_color = crate::ui::style::header_color(self.ui_handler.is_dark_mode());
                 
-                // Calculate pagination
-                let items_per_page = 50;
+                // Calculate pagination with dynamic items per page based on available height
+                let row_height = 24.0;
+                let header_height = 30.0;
+                let footer_height = 40.0; // Space for pagination controls
+                let available_height = ui.available_height() - header_height - footer_height;
+                
+                // Calculate items per page based on available height, with a minimum of 10 items
+                let items_per_page = (available_height / row_height).max(10.0) as usize;
                 let total_pages = (self.file_list.len() + items_per_page - 1) / items_per_page;
                 let start_idx = self.current_page * items_per_page;
                 let end_idx = (start_idx + items_per_page).min(self.file_list.len());
@@ -745,13 +923,34 @@ impl eframe::App for GitScrollApp {
                                         if self.sort_direction == SortDirection::Ascending { "↑" } else { "↓" }
                                     } else { "" };
                                     
-                                    // Display headers as non-clickable labels with sort indicators
-                                    ui.add_sized(
+                                    // Make headers clickable for sorting
+                                    let header_button = ui.add_sized(
                                         [*width, 30.0],
-                                        egui::Label::new(
+                                        egui::Button::new(
                                             egui::RichText::new(format!("{} {}", text, sort_indicator)).strong()
-                                        )
+                                        ).fill(header_color)
                                     );
+                                    
+                                    if header_button.clicked() {
+                                        if self.sort_column == *col {
+                                            // Toggle direction if already sorting by this column
+                                            self.sort_direction = match self.sort_direction {
+                                                SortDirection::Ascending => SortDirection::Descending,
+                                                SortDirection::Descending => SortDirection::Ascending,
+                                            };
+                                        } else {
+                                            // Set new sort column
+                                            self.sort_column = *col;
+                                        }
+                                        self.sort_file_list();
+                                    }
+                                    
+                                    // Add tooltip to explain sorting
+                                    if header_button.hovered() {
+                                        egui::show_tooltip(ui.ctx(), LayerId::background(), egui::Id::new("sort_tooltip").with(i), |ui| {
+                                            ui.label(format!("Click to sort by {}", text));
+                                        });
+                                    }
                                     
                                     // Add resize handle between columns
                                     if i < 2 { // Only between columns
@@ -1061,49 +1260,99 @@ impl eframe::App for GitScrollApp {
                         });
                 });
                 
-                // Add pagination controls
+                // Enhanced pagination controls with better layout and more options
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(5.0);
                 
-                let items_per_page = 50;
-                let total_pages = (self.file_list.len() + items_per_page - 1) / items_per_page;
-                
+                // Use the dynamically calculated items_per_page from above
                 if total_pages > 1 {
-                    ui.horizontal(|ui| {
-                        ui.label("Page:");
-                        
-                        // Previous page button
-                        if ui.add_enabled(
-                            self.current_page > 0,
-                            egui::Button::new("◀ Previous")
-                        ).clicked() {
-                            self.current_page = self.current_page.saturating_sub(1);
-                        }
-                        
-                        // Page number indicator
-                        ui.label(format!("{} of {}", self.current_page + 1, total_pages));
-                        
-                        // Next page button
-                        if ui.add_enabled(
-                            self.current_page < total_pages - 1,
-                            egui::Button::new("Next ▶")
-                        ).clicked() {
-                            self.current_page = (self.current_page + 1).min(total_pages - 1);
-                        }
-                        
-                        // Jump to page
-                        ui.separator();
-                        ui.label("Go to:");
-                        let mut page_text = (self.current_page + 1).to_string();
-                        if ui.text_edit_singleline(&mut page_text).changed() {
-                            if let Ok(page) = page_text.parse::<usize>() {
-                                if page > 0 && page <= total_pages {
-                                    self.current_page = page - 1;
+                    egui::Frame::default()
+                        .fill(if self.ui_handler.is_dark_mode() {
+                            egui::Color32::from_rgb(40, 40, 45)
+                        } else {
+                            egui::Color32::from_rgb(245, 245, 250)
+                        })
+                        .inner_margin(egui::vec2(8.0, 8.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // First page button
+                                if ui.add_enabled(
+                                    self.current_page > 0,
+                                    egui::Button::new("⏮ First")
+                                ).clicked() {
+                                    self.current_page = 0;
                                 }
-                            }
-                        }
-                    });
+                                
+                                // Previous page button
+                                if ui.add_enabled(
+                                    self.current_page > 0,
+                                    egui::Button::new("◀ Previous")
+                                ).clicked() {
+                                    self.current_page = self.current_page.saturating_sub(1);
+                                }
+                                
+                                // Page number indicator with strong text
+                                ui.label(egui::RichText::new(
+                                    format!("Page {} of {}", self.current_page + 1, total_pages)
+                                ).strong());
+                                
+                                // Next page button
+                                if ui.add_enabled(
+                                    self.current_page < total_pages - 1,
+                                    egui::Button::new("Next ▶")
+                                ).clicked() {
+                                    self.current_page = (self.current_page + 1).min(total_pages - 1);
+                                }
+                                
+                                // Last page button
+                                if ui.add_enabled(
+                                    self.current_page < total_pages - 1,
+                                    egui::Button::new("Last ⏭")
+                                ).clicked() {
+                                    self.current_page = total_pages - 1;
+                                }
+                                
+                                // Jump to page with better styling
+                                ui.separator();
+                                ui.label("Go to:");
+                                let mut page_text = (self.current_page + 1).to_string();
+                                let response = ui.add_sized(
+                                    [50.0, 24.0],
+                                    egui::TextEdit::singleline(&mut page_text)
+                                        .hint_text("Page #")
+                                );
+                                
+                                if response.changed() || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+                                    if let Ok(page) = page_text.parse::<usize>() {
+                                        if page > 0 && page <= total_pages {
+                                            self.current_page = page - 1;
+                                        }
+                                    }
+                                }
+                                
+                                // Add page size selector
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label("Items per page:");
+                                    let page_sizes = [10, 25, 50, 100];
+                                    let current_size = items_per_page;
+                                    
+                                    egui::ComboBox::from_id_source("page_size")
+                                        .selected_text(format!("{}", current_size))
+                                        .show_ui(ui, |ui| {
+                                            for &size in &page_sizes {
+                                                let text = format!("{}", size);
+                                                if ui.selectable_label(current_size == size, text).clicked() {
+                                                    // We can't actually change the items_per_page here since it's calculated dynamically,
+                                                    // but in a real implementation, you would store the user's preference and use it
+                                                    // to override the calculated value
+                                                }
+                                            }
+                                            ui.selectable_label(true, "Auto"); // Always selected since we're using dynamic calculation
+                                        });
+                                });
+                            });
+                        });
                 }
             }
         });

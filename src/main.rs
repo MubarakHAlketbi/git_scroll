@@ -8,11 +8,11 @@ fn main() {
     // Log startup information
     println!("Starting Git Scroll...");
     
-    // Set up native options
+    // Set up native options with improved window size
     let native_options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([800.0, 600.0])
+            .with_inner_size([1024.0, 768.0]) // Adjusted default size
+            .with_min_inner_size([640.0, 480.0]) // Smaller minimum for better responsiveness
             .with_position([100.0, 100.0])
             .with_title("Git Scroll - Repository Analyzer")
             .with_icon(load_icon()),
