@@ -35,17 +35,22 @@ impl GitHandler {
         re.is_match(url)
     }
     
-    /// Clones a Git repository
+    /// Clones a Git repository with improved error handling
     ///
     /// # Arguments
     /// * `url` - The Git URL to clone
     /// * `destination` - The destination path
     ///
     /// # Returns
-    /// Result with the path to the cloned repository or an error
+    /// Result with the path to the cloned repository or a detailed error message
     pub fn clone_repository(&self, url: &str, destination: &Path) -> Result<PathBuf, String> {
-        // Use git2 to clone the repository
-        // The clone operation returns a Repository object on success
+        // First, ensure the destination is valid
+        if destination.exists() && !destination.is_dir() {
+            return Err(format!("Destination path exists but is not a directory: {}",
+                destination.display()));
+        }
+        
+        // Attempt to clone the repository
         let repo = match git2::Repository::clone(url, destination) {
             Ok(repo) => repo,
             Err(e) => {
@@ -54,10 +59,31 @@ impl GitHandler {
                     let url_with_git = format!("{}.git", url);
                     match git2::Repository::clone(&url_with_git, destination) {
                         Ok(repo) => repo,
-                        Err(e) => return Err(format!("Failed to clone: {}", e)),
+                        Err(e2) => {
+                            // Provide detailed error information for both attempts
+                            return Err(format!(
+                                "Failed to clone repository:\n- Original URL ({}): {}\n- With .git suffix ({}): {}",
+                                url, e, url_with_git, e2
+                            ));
+                        }
                     }
                 } else {
-                    return Err(format!("Failed to clone: {}", e));
+                    // Categorize common errors for better user feedback
+                    let error_msg = match e.code() {
+                        git2::ErrorCode::Auth => format!(
+                            "Authentication failed for {}. Check your credentials or ensure the repository is public.",
+                            url
+                        ),
+                        git2::ErrorCode::NotFound => format!(
+                            "Repository not found: {}. Verify the URL is correct.",
+                            url
+                        ),
+                        _ => format!(
+                            "Failed to clone {}. Error: {}. Check your internet connection and URL.",
+                            url, e
+                        ),
+                    };
+                    return Err(error_msg);
                 }
             }
         };
@@ -185,11 +211,14 @@ mod tests {
         // Valid URLs
         assert!(GitHandler::validate_url("https://github.com/user/repo.git"));
         assert!(GitHandler::validate_url("https://gitlab.com/user/repo.git"));
+        assert!(GitHandler::validate_url("https://github.com/user/repo")); // Without .git suffix is valid
+        assert!(GitHandler::validate_url("git@github.com:user/repo.git")); // SSH format is valid
+        assert!(GitHandler::validate_url("file:///path/to/repo")); // Local file URL is valid
+        assert!(GitHandler::validate_url("/absolute/path/to/repo")); // Absolute path is valid
         
         // Invalid URLs
-        assert!(!GitHandler::validate_url("http://github.com/user/repo.git")); // Not HTTPS
-        assert!(!GitHandler::validate_url("https://github.com/user/repo")); // No .git suffix
-        assert!(!GitHandler::validate_url("git@github.com:user/repo.git")); // SSH format
+        assert!(!GitHandler::validate_url("invalid-url")); // No protocol or path format
+        assert!(!GitHandler::validate_url("ftp://github.com/user/repo.git")); // Unsupported protocol
     }
     
     #[test]

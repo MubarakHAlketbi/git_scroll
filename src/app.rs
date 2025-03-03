@@ -4,6 +4,7 @@ use std::sync::mpsc;
 use std::thread;
 use eframe::epaint::{Margin, CornerRadius};
 use egui::LayerId;
+use rayon::prelude::*;
 
 use crate::git::GitHandler;
 use crate::directory::{DirectoryParser, DirectoryEntry};
@@ -19,6 +20,7 @@ pub struct FileInfo {
 }
 
 /// Counts tokens in a file by splitting on whitespace
+/// Uses streaming to reduce memory usage for large files
 fn count_tokens(path: &Path) -> usize {
     // Define text file extensions
     let text_extensions = [
@@ -34,9 +36,16 @@ fn count_tokens(path: &Path) -> usize {
         return 0; // No extension, assume binary
     }
 
-    // Read file content and count words
-    match std::fs::read_to_string(path) {
-        Ok(content) => content.split_whitespace().count(),
+    // Stream file content and count words to reduce memory usage
+    match std::fs::File::open(path) {
+        Ok(file) => {
+            use std::io::{BufRead, BufReader};
+            let reader = BufReader::new(file);
+            reader.lines()
+                .filter_map(Result::ok)
+                .map(|line| line.split_whitespace().count())
+                .sum()
+        },
         Err(_) => 0, // Return 0 if file can't be read
     }
 }
@@ -388,6 +397,7 @@ impl GitScrollApp {
     }
 
     /// Populates the file list from the directory structure
+    /// Uses parallel processing with rayon for better performance
     fn populate_file_list(&mut self, root_entry: &DirectoryEntry) {
         self.file_list.clear();
         let files = self.directory_parser.get_all_files(root_entry);
@@ -402,25 +412,26 @@ impl GitScrollApp {
         self.is_loading_tokens = true;
         
         // Create a placeholder for each file with 0 tokens initially
-        for (index, path) in files.iter().enumerate() {
-            self.file_list.push(FileInfo {
+        self.file_list = files
+            .iter()
+            .enumerate()
+            .map(|(index, path)| FileInfo {
                 index,
                 path: path.clone(),
                 tokens: 0, // Will be updated asynchronously
                 selected: false, // Not selected by default
-            });
-        }
+            })
+            .collect();
         
-        // Spawn threads to count tokens for each file
-        for (index, path) in files.into_iter().enumerate() {
-            let sender = token_sender.clone();
-            let path_clone = path.clone();
-            
-            thread::spawn(move || {
-                let tokens = count_tokens(&path_clone);
-                let _ = sender.send((index, path_clone, tokens));
+        // Process files in parallel using rayon
+        let files_to_process = files.clone();
+        thread::spawn(move || {
+            // Use par_iter for parallel processing with a thread pool
+            files_to_process.par_iter().enumerate().for_each(|(index, path)| {
+                let tokens = count_tokens(path);
+                let _ = token_sender.send((index, path.clone(), tokens));
             });
-        }
+        });
         
         // Initial sort (will be updated as tokens are counted)
         self.sort_file_list();
@@ -521,40 +532,45 @@ impl GitScrollApp {
             }
         }
         
-        // Check for token counting results
+        // Check for token counting results with improved responsiveness
         if self.is_loading_tokens {
             let mut received_count = 0;
             let mut all_received = false;
+            let total_files = self.file_list.len();
+            let mut needs_sort = false;
             
-            // Try to receive as many token results as possible without blocking
-            while let Ok((index, path, tokens)) = self.token_receiver.try_recv() {
-                received_count += 1;
-                
-                // Update the token count for the file at the given index
-                if index < self.file_list.len() {
-                    // Find the file with the matching index and path
-                    for file in &mut self.file_list {
-                        if file.index == index && file.path == path {
+            // Try to receive token results in batches without blocking
+            for _ in 0..20 { // Process up to 20 results per frame for smoother UI
+                match self.token_receiver.try_recv() {
+                    Ok((index, path, tokens)) => {
+                        received_count += 1;
+                        
+                        // Update the token count for the file with matching index and path
+                        if let Some(file) = self.file_list.iter_mut().find(|f| f.index == index && f.path == path) {
                             file.tokens = tokens;
-                            break;
+                            needs_sort = true;
                         }
-                    }
-                }
-                
-                // Check if we've received all results (assuming file_list is populated)
-                if received_count >= self.file_list.len() {
-                    all_received = true;
-                    break;
+                    },
+                    Err(_) => break // No more results available right now
                 }
             }
             
-            // If we received any results, resort the list
-            if received_count > 0 {
+            // Resort the list if we received any results
+            if needs_sort {
                 self.sort_file_list();
+                // Request a repaint to update the UI immediately
+                ctx.request_repaint();
             }
             
-            // If all results are received, update the loading state
-            if all_received {
+            // Update progress in status message
+            let completed = self.file_list.iter().filter(|f| f.tokens > 0).count();
+            if completed > 0 {
+                let percentage = (completed as f32 / total_files as f32 * 100.0) as usize;
+                self.status_message = format!("Counting tokens: {}% ({}/{})", percentage, completed, total_files);
+            }
+            
+            // Check if all files have been processed
+            if completed >= total_files {
                 self.is_loading_tokens = false;
                 self.status_message = String::from("Token counting completed");
             }
