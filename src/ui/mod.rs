@@ -472,48 +472,37 @@ pub mod style {
     /// * `ctx` - The egui context
     pub fn apply_light_style(ctx: &egui::Context) {
         let mut style = egui::Style::default();
-        
-        // Explicitly set light mode
         style.visuals.dark_mode = false;
-        
+
         // Background and panel colors
-        style.visuals.panel_fill = egui::Color32::from_rgb(245, 245, 245); // Light gray background
-        style.visuals.window_fill = egui::Color32::from_rgb(235, 235, 235); // Slightly darker for windows
-        
-        // Widget styles
-        style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(240, 240, 240); // Base background
-        style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(220, 220, 220); // Inactive widgets
-        style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(200, 200, 255); // Hovered state
-        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(180, 180, 255); // Active state
-        
-        // Text color for readability
-        style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 40)); // Dark gray text
+        style.visuals.panel_fill = egui::Color32::from_rgb(245, 245, 245); // Light gray
+        style.visuals.window_fill = egui::Color32::from_rgb(235, 235, 235);
+
+        // Widgets (buttons and TextEdit)
+        style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(240, 240, 240);
+        style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(200, 200, 200); // Darker gray for contrast
+        style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(180, 180, 255);
+        style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(160, 160, 255);
+
+        // Text colors
+        style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 40));
         style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 60, 60));
-        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 0, 0)); // Black when hovered
+        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 0, 0));
         style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 0, 0));
-        
-        // Selection and hyperlink colors
-        style.visuals.selection.bg_fill = egui::Color32::from_rgb(150, 150, 255); // Light blue selection
-        style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(0, 0, 80));
-        style.visuals.hyperlink_color = egui::Color32::from_rgb(0, 100, 200); // Blue links
-        
-        // Customize spacing
+
+        style.visuals.selection.bg_fill = egui::Color32::from_rgb(150, 150, 255);
+        style.visuals.hyperlink_color = egui::Color32::from_rgb(0, 100, 200);
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(6.0, 4.0);
-        
-        // Apply the style
+
         ctx.set_style(style);
-        
-        // Set fonts (unchanged from your code)
+
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "jetbrains_mono".to_owned(),
             std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf"))),
         );
-        fonts.families
-            .entry(egui::FontFamily::Monospace)
-            .or_default()
-            .insert(0, "jetbrains_mono".to_owned());
+        fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "jetbrains_mono".to_owned());
         ctx.set_fonts(fonts);
     }
     
@@ -522,39 +511,44 @@ pub mod style {
     /// # Arguments
     /// * `ctx` - The egui context
     pub fn apply_dark_style(ctx: &egui::Context) {
-        let mut style = (*ctx.style()).clone();
-        
-        // Customize fonts
-        let mut fonts = egui::FontDefinitions::default();
-        
-        // Add monospace font for code-related data
-        fonts.font_data.insert(
-            "jetbrains_mono".to_owned(),
-            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf"))),
-        );
-        
-        // Set monospace as the proportional font for code
-        fonts.families
-            .entry(egui::FontFamily::Monospace)
-            .or_default()
-            .insert(0, "jetbrains_mono".to_owned());
-        
-        // Customize colors for dark theme
+        let mut style = egui::Style::default(); // Start fresh instead of cloning
         style.visuals.dark_mode = true;
+
+        // Background and panel colors
+        style.visuals.panel_fill = egui::Color32::from_rgb(30, 30, 30); // Dark gray
+        style.visuals.window_fill = egui::Color32::from_rgb(40, 40, 40);
+
+        // Widget styles
         style.visuals.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(42, 42, 42);
         style.visuals.widgets.inactive.bg_fill = egui::Color32::from_rgb(50, 50, 50);
         style.visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(60, 60, 80);
         style.visuals.widgets.active.bg_fill = egui::Color32::from_rgb(70, 70, 100);
-        
-        // Customize text colors for better contrast
+
+        // Text colors
         style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(220, 220, 220));
-        
+        style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(200, 200, 200));
+        style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(230, 230, 230));
+        style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 255, 255));
+
+        // Selection and hyperlink colors
+        style.visuals.selection.bg_fill = egui::Color32::from_rgb(60, 60, 120);
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(120, 120, 220));
+        style.visuals.hyperlink_color = egui::Color32::from_rgb(90, 170, 255);
+
         // Customize spacing
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(6.0, 4.0);
         
         // Apply the style
         ctx.set_style(style);
+        
+        // Set fonts
+        let mut fonts = egui::FontDefinitions::default();
+        fonts.font_data.insert(
+            "jetbrains_mono".to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/JetBrainsMono-Regular.ttf"))),
+        );
+        fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "jetbrains_mono".to_owned());
         ctx.set_fonts(fonts);
     }
     

@@ -65,6 +65,12 @@ pub enum SortDirection {
     Descending,
 }
 
+/// Progress information for cloning operations
+enum CloneProgress {
+    Progress(f32),
+    Completed(Result<PathBuf, String>),
+}
+
 /// Main application state for Git Scroll
 pub struct GitScrollApp {
     // Input state
@@ -103,7 +109,7 @@ pub struct GitScrollApp {
     current_page: usize,     // Current page for pagination
     
     // Background processing channels
-    clone_receiver: mpsc::Receiver<Result<PathBuf, String>>,
+    clone_receiver: mpsc::Receiver<CloneProgress>,
     parse_receiver: mpsc::Receiver<Result<DirectoryEntry, String>>,
     token_receiver: mpsc::Receiver<(usize, PathBuf, usize)>,
 }
@@ -114,7 +120,7 @@ impl GitScrollApp {
     /// Returns a new GitScrollApp with default values
     pub fn new() -> Self {
         // Create channels for background processing
-        let (_clone_sender, clone_receiver) = mpsc::channel();
+        let (_clone_sender, clone_receiver) = mpsc::channel::<CloneProgress>();
         let (_parse_sender, parse_receiver) = mpsc::channel();
         let (_token_sender, token_receiver) = mpsc::channel();
         
@@ -187,7 +193,7 @@ impl GitScrollApp {
         self.ui_handler.set_loading(true);
         
         // Create channels for this operation
-        let (clone_sender, clone_receiver) = mpsc::channel();
+        let (clone_sender, clone_receiver) = mpsc::channel::<CloneProgress>();
         let (parse_sender, parse_receiver) = mpsc::channel();
         self.clone_receiver = clone_receiver;
         self.parse_receiver = parse_receiver;
@@ -213,22 +219,45 @@ impl GitScrollApp {
         
         // Spawn a background thread to perform the cloning and parsing
         thread::spawn(move || {
-            // Send an interim status message to provide feedback during cloning
-            let _ = clone_sender.send(Err("Cloning repository, please wait...".to_string()));
-            
-            // Clone the repository
+            use git2::RemoteCallbacks;
+            use git2::build::RepoBuilder;
+
+            // Set up callbacks to track progress
+            let mut callbacks = RemoteCallbacks::new();
+            let mut fetch_options = git2::FetchOptions::new();
+
+            callbacks.transfer_progress(|stats| {
+                let progress = if stats.total_objects() > 0 {
+                    (stats.received_objects() as f32 / stats.total_objects() as f32).min(1.0)
+                } else {
+                    0.0
+                };
+                let _ = clone_sender.send(CloneProgress::Progress(progress));
+                true
+            });
+
+            fetch_options.remote_callbacks(callbacks);
+            let mut builder = RepoBuilder::new();
+            builder.fetch_options(fetch_options);
+
+            // Clone the repository with progress tracking
             println!("Cloning {} to {:?}", git_url, temp_dir.path());
-            let repo_path_result = git_handler.clone_repository(&git_url, temp_dir.path());
-            println!("Clone result: {:?}", repo_path_result.is_ok());
+            let repo_result = builder.clone(&git_url, temp_dir.path());
             
-            // Send the result back to the main thread
-            let _ = clone_sender.send(repo_path_result.clone());
-            
-            // If cloning was successful, parse the directory structure
-            if let Ok(repo_path) = repo_path_result {
-                let parser = DirectoryParser::new();
-                let parse_result = parser.parse_directory(&repo_path);
-                let _ = parse_sender.send(parse_result);
+            // Send the final result
+            match repo_result {
+                Ok(repo) => {
+                    let repo_path = repo.path().parent().unwrap_or(repo.path()).to_path_buf();
+                    let _ = clone_sender.send(CloneProgress::Completed(Ok(repo_path.clone())));
+                    
+                    // Parse the directory structure
+                    let parser = DirectoryParser::new();
+                    let parse_result = parser.parse_directory(&repo_path);
+                    let _ = parse_sender.send(parse_result);
+                },
+                Err(e) => {
+                    let _ = clone_sender.send(CloneProgress::Completed(Err(e.to_string())));
+                }
             }
         });
     }
@@ -474,26 +503,31 @@ impl GitScrollApp {
     /// # Arguments
     /// * `ctx` - The egui context
     fn check_background_operations(&mut self, ctx: &egui::Context) {
-        // Check for clone results
-        if let Ok(repo_path_result) = self.clone_receiver.try_recv() {
-            match repo_path_result {
-                Ok(repo_path) => {
-                    self.repository_path = Some(repo_path);
-                    self.status_message = String::from("Repository cloned successfully, parsing directory...");
+        // Check for clone progress and results
+        if let Ok(clone_msg) = self.clone_receiver.try_recv() {
+            match clone_msg {
+                CloneProgress::Progress(progress) => {
+                    // Update progress in UI
+                    self.ui_handler.set_progress(progress);
+                    self.status_message = format!("Cloning repository... {:.0}%", progress * 100.0);
+                    ctx.request_repaint(); // Force UI update to show progress
                 },
-                Err(e) if e == "Cloning repository, please wait..." => {
-                    // This is just an interim status message, not an error
-                    self.status_message = e;
-                    ctx.request_repaint(); // Force UI update to show the message
-                },
-                Err(e) => {
-                    let error_message = format!("Failed to clone repository: {}", e);
-                    self.status_message = error_message.clone();
-                    self.is_cloning = false;
-                    self.ui_handler.set_loading(false);
-                    
-                    // Show error dialog for critical errors
-                    self.show_error_dialog(ctx, &error_message);
+                CloneProgress::Completed(result) => {
+                    match result {
+                        Ok(repo_path) => {
+                            self.repository_path = Some(repo_path);
+                            self.status_message = String::from("Repository cloned successfully, parsing directory...");
+                        },
+                        Err(e) => {
+                            let error_message = format!("Failed to clone repository: {}", e);
+                            self.status_message = error_message.clone();
+                            self.is_cloning = false;
+                            self.ui_handler.set_loading(false);
+                            
+                            // Show error dialog for critical errors
+                            self.show_error_dialog(ctx, &error_message);
+                        }
+                    }
                 }
             }
         }
@@ -632,11 +666,18 @@ impl eframe::App for GitScrollApp {
                 let url_width = (ui.available_width() - total_fixed_width).max(min_url_width);
 
                 // URL input with flexible width
+                let url_input_id = ui.make_persistent_id("git_url_input");
                 let response = ui.add_sized(
                     [url_width, 28.0],
                     egui::TextEdit::singleline(&mut self.git_url)
                         .hint_text("Enter repository URL...")
+                        .id(url_input_id)
                 );
+
+                // Handle Enter key press when URL input is focused
+                if response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    self.handle_clone_button();
+                }
 
                 ui.add_space(spacing);
 
