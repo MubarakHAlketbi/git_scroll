@@ -1,10 +1,14 @@
 use eframe::egui;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use eframe::epaint::{Margin, CornerRadius};
 use egui::LayerId;
 use rayon::prelude::*;
+
+// Static variable for cancel flag
+static mut CANCEL_FLAG: Option<Arc<AtomicBool>> = None;
 
 use crate::git::GitHandler;
 use crate::directory::{DirectoryParser, DirectoryEntry};
@@ -15,13 +19,42 @@ use crate::ui::UiHandler;
 pub struct FileInfo {
     pub index: usize,          // Order in the list
     pub path: PathBuf,         // Full path to the file
-    pub tokens: usize,         // Number of tokens in the file
+    pub tokens: usize,         // Number of tokens in the file (or size in bytes for binary files)
     pub selected: bool,        // Whether the file is selected
+    pub is_binary: bool,       // Whether the file is a binary file
+}
+
+/// Formats a file size in bytes to a human-readable string
+///
+/// # Arguments
+/// * `size_bytes` - The size in bytes
+///
+/// # Returns
+/// * `String` - The formatted size string (e.g., "1.23 MB (1234567 bytes)")
+fn format_file_size(size_bytes: usize) -> String {
+    if size_bytes > 1024 * 1024 * 1024 {
+        format!("{:.2} GB ({} bytes)",
+            size_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            size_bytes)
+    } else if size_bytes > 1024 * 1024 {
+        format!("{:.2} MB ({} bytes)",
+            size_bytes as f64 / (1024.0 * 1024.0),
+            size_bytes)
+    } else if size_bytes > 1024 {
+        format!("{:.2} KB ({} bytes)",
+            size_bytes as f64 / 1024.0,
+            size_bytes)
+    } else {
+        format!("{} bytes", size_bytes)
+    }
 }
 
 /// Counts tokens in a file by splitting on whitespace
 /// Uses streaming to reduce memory usage for large files
-fn count_tokens(path: &Path) -> usize {
+///
+/// # Returns
+/// * `(usize, bool)` - (token count or file size, is_binary)
+fn count_tokens(path: &Path) -> (usize, bool) {
     // Define text file extensions
     let text_extensions = [
         "txt", "rs", "py", "js", "md", "html", "css", "json", "yaml", "toml",
@@ -30,10 +63,18 @@ fn count_tokens(path: &Path) -> usize {
     // Check if the file has a text extension
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         if !text_extensions.contains(&ext.to_lowercase().as_str()) {
-            return 0; // Skip non-text files
+            // For binary files, return the file size in bytes
+            return match std::fs::metadata(path) {
+                Ok(metadata) => (metadata.len() as usize, true),
+                Err(_) => (0, true),
+            };
         }
     } else {
-        return 0; // No extension, assume binary
+        // No extension, assume binary and return file size
+        return match std::fs::metadata(path) {
+            Ok(metadata) => (metadata.len() as usize, true),
+            Err(_) => (0, true),
+        };
     }
 
     // Stream file content and count words to reduce memory usage
@@ -41,12 +82,13 @@ fn count_tokens(path: &Path) -> usize {
         Ok(file) => {
             use std::io::{BufRead, BufReader};
             let reader = BufReader::new(file);
-            reader.lines()
+            let token_count = reader.lines()
                 .filter_map(Result::ok)
                 .map(|line| line.split_whitespace().count())
-                .sum()
+                .sum();
+            (token_count, false) // Not binary, return token count
         },
-        Err(_) => 0, // Return 0 if file can't be read
+        Err(_) => (0, false), // Return 0 if file can't be read
     }
 }
 
@@ -80,6 +122,7 @@ pub struct GitScrollApp {
     // Application state
     status_message: String,
     is_cloning: bool,
+    cancel_requested: bool, // Flag to cancel cloning operation
     
     // Repository data
     repository_path: Option<PathBuf>,
@@ -111,7 +154,7 @@ pub struct GitScrollApp {
     // Background processing channels
     clone_receiver: mpsc::Receiver<CloneProgress>,
     parse_receiver: mpsc::Receiver<Result<DirectoryEntry, String>>,
-    token_receiver: mpsc::Receiver<(usize, PathBuf, usize)>,
+    token_receiver: mpsc::Receiver<(usize, PathBuf, usize, bool)>,
 }
 
 impl GitScrollApp {
@@ -130,6 +173,7 @@ impl GitScrollApp {
             keep_repository: false,
             status_message: String::from("Ready"),
             is_cloning: false,
+            cancel_requested: false,
             repository_path: None,
             directory_structure: None,
             
@@ -189,6 +233,7 @@ impl GitScrollApp {
         
         // Update state
         self.is_cloning = true;
+        self.cancel_requested = false; // Reset cancel flag
         self.status_message = String::from("Cloning repository...");
         self.ui_handler.set_loading(true);
         
@@ -217,6 +262,10 @@ impl GitScrollApp {
                 }
             };
         
+        // Create a shared cancel flag that can be checked from the background thread
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let cancel_flag_clone = cancel_flag.clone();
+        
         // Spawn a background thread to perform the cloning and parsing
         thread::spawn(move || {
             use git2::RemoteCallbacks;
@@ -227,6 +276,12 @@ impl GitScrollApp {
             let mut fetch_options = git2::FetchOptions::new();
 
             callbacks.transfer_progress(|stats| {
+                // Check if cancellation was requested
+                if cancel_flag.load(Ordering::SeqCst) {
+                    // Return false to abort the transfer
+                    return false;
+                }
+                
                 let progress = if stats.total_objects() > 0 {
                     (stats.received_objects() as f32 / stats.total_objects() as f32).min(1.0)
                 } else {
@@ -244,6 +299,12 @@ impl GitScrollApp {
             println!("Cloning {} to {:?}", git_url, temp_dir.path());
             let repo_result = builder.clone(&git_url, temp_dir.path());
             
+            // Check if cancellation was requested
+            if cancel_flag.load(Ordering::SeqCst) {
+                let _ = clone_sender.send(CloneProgress::Completed(Err("Clone operation cancelled by user".to_string())));
+                return;
+            }
+            
             // Send the final result
             match repo_result {
                 Ok(repo) => {
@@ -260,6 +321,11 @@ impl GitScrollApp {
                 }
             }
         });
+        
+        // Store the cancel flag for later use in the static variable
+        unsafe {
+            CANCEL_FLAG = Some(cancel_flag_clone);
+        }
     }
     
     // Square-related methods removed (handle_zoom, handle_layout_change, handle_theme_change)
@@ -299,22 +365,41 @@ impl GitScrollApp {
         
         if !self.file_list.is_empty() {
             let total_files = self.file_list.len();
-            let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
-            let avg_tokens = if total_files > 0 { total_tokens / total_files } else { 0 };
+            let text_files = self.file_list.iter().filter(|f| !f.is_binary).count();
+            let binary_files = self.file_list.iter().filter(|f| f.is_binary).count();
+            let total_tokens = self.file_list.iter().filter(|f| !f.is_binary).map(|f| f.tokens).sum::<usize>();
+            let avg_tokens = if text_files > 0 { total_tokens / text_files } else { 0 };
             
-            ui.label(format!("Total Text Files: {}", total_files));
-            ui.label(format!("Total Tokens: {}", total_tokens));
-            ui.label(format!("Average Tokens per File: {}", avg_tokens));
+            ui.label(format!("Total Files: {}", total_files));
+            ui.label(format!("Text Files: {}", text_files));
+            ui.label(format!("Binary Files: {}", binary_files));
+            ui.label(format!("Total Tokens (text files): {}", total_tokens));
+            ui.label(format!("Average Tokens per Text File: {}", avg_tokens));
+            
+            // Add binary file size statistics
+            if binary_files > 0 {
+                let total_binary_size = self.file_list.iter()
+                    .filter(|f| f.is_binary)
+                    .map(|f| f.tokens)
+                    .sum::<usize>();
+                
+                let avg_binary_size = if binary_files > 0 { total_binary_size / binary_files } else { 0 };
+                
+                ui.add_space(5.0);
+                ui.label(format!("Average Binary Size: {}", format_file_size(avg_binary_size)));
+                ui.label(format!("Total Binary Size: {}", format_file_size(total_binary_size)));
+            }
             
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
             
-            // Add token count legend
-            ui.label("Token Count Legend:");
+            // Add token count legend (for text files only)
+            ui.label("Token Count Legend (Text Files):");
             ui.horizontal(|ui| {
-                // Calculate max tokens for color scaling
+                // Calculate max tokens for color scaling (text files only)
                 let max_tokens = self.file_list.iter()
+                    .filter(|f| !f.is_binary)
                     .map(|f| f.tokens)
                     .max()
                     .unwrap_or(1);
@@ -333,12 +418,15 @@ impl GitScrollApp {
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(10.0);
-            
-            ui.heading("Top Files by Token Count");
+            ui.heading("Top Text Files by Token Count");
             ui.add_space(5.0);
             
-            // Get top files by token count
-            let mut top_files = self.file_list.clone();
+            // Get top text files by token count (exclude binary files)
+            let mut top_files = self.file_list.iter()
+                .filter(|f| !f.is_binary)
+                .cloned()
+                .collect::<Vec<_>>();
+            top_files.sort_by(|a, b| b.tokens.cmp(&a.tokens));
             top_files.sort_by(|a, b| b.tokens.cmp(&a.tokens));
             
             // Display top files
@@ -449,6 +537,7 @@ impl GitScrollApp {
                 path: path.clone(),
                 tokens: 0, // Will be updated asynchronously
                 selected: false, // Not selected by default
+                is_binary: false, // Will be updated asynchronously
             })
             .collect();
         
@@ -457,8 +546,8 @@ impl GitScrollApp {
         thread::spawn(move || {
             // Use par_iter for parallel processing with a thread pool
             files_to_process.par_iter().enumerate().for_each(|(index, path)| {
-                let tokens = count_tokens(path);
-                let _ = token_sender.send((index, path.clone(), tokens));
+                let (tokens, is_binary) = count_tokens(path);
+                let _ = token_sender.send((index, path.clone(), tokens, is_binary));
             });
         });
         
@@ -503,6 +592,16 @@ impl GitScrollApp {
     /// # Arguments
     /// * `ctx` - The egui context
     fn check_background_operations(&mut self, ctx: &egui::Context) {
+        // Check if cancel was requested and update the cancel flag
+        if self.cancel_requested {
+            // Access the static cancel flag
+            unsafe {
+                if let Some(ref cancel_flag) = CANCEL_FLAG {
+                    cancel_flag.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        
         // Check for clone progress and results
         if let Ok(clone_msg) = self.clone_receiver.try_recv() {
             match clone_msg {
@@ -517,12 +616,14 @@ impl GitScrollApp {
                         Ok(repo_path) => {
                             self.repository_path = Some(repo_path);
                             self.status_message = String::from("Repository cloned successfully, parsing directory...");
+                            self.cancel_requested = false; // Reset cancel flag
                         },
                         Err(e) => {
                             let error_message = format!("Failed to clone repository: {}", e);
                             self.status_message = error_message.clone();
                             self.is_cloning = false;
                             self.ui_handler.set_loading(false);
+                            self.cancel_requested = false; // Reset cancel flag
                             
                             // Show error dialog for critical errors
                             self.show_error_dialog(ctx, &error_message);
@@ -576,12 +677,13 @@ impl GitScrollApp {
             // Try to receive token results in batches without blocking
             for _ in 0..20 { // Process up to 20 results per frame for smoother UI
                 match self.token_receiver.try_recv() {
-                    Ok((index, path, tokens)) => {
+                    Ok((index, path, tokens, is_binary)) => {
                         received_count += 1;
                         
                         // Update the token count for the file with matching index and path
                         if let Some(file) = self.file_list.iter_mut().find(|f| f.index == index && f.path == path) {
                             file.tokens = tokens;
+                            file.is_binary = is_binary;
                             needs_sort = true;
                         }
                     },
@@ -681,16 +783,31 @@ impl eframe::App for GitScrollApp {
 
                 ui.add_space(spacing);
 
-                // Clone button
-                if ui.add_enabled(
-                    !self.is_cloning && !self.git_url.is_empty(),
-                    egui::Button::new(
-                        egui::RichText::new(if self.is_cloning { "Cloning..." } else { "Clone" })
-                            .strong()
-                    )
-                    .min_size(egui::vec2(clone_button_width, 28.0))
-                ).clicked() {
-                    self.handle_clone_button();
+                // Clone or Cancel button based on state
+                if self.is_cloning {
+                    // Show Cancel button when cloning
+                    if ui.add(
+                        egui::Button::new(
+                            egui::RichText::new("Cancel")
+                                .strong()
+                        )
+                        .min_size(egui::vec2(clone_button_width, 28.0))
+                    ).clicked() {
+                        self.cancel_requested = true;
+                        self.status_message = String::from("Cancelling clone operation...");
+                    }
+                } else {
+                    // Show Clone button when not cloning
+                    if ui.add_enabled(
+                        !self.git_url.is_empty(),
+                        egui::Button::new(
+                            egui::RichText::new("Clone")
+                                .strong()
+                        )
+                        .min_size(egui::vec2(clone_button_width, 28.0))
+                    ).clicked() {
+                        self.handle_clone_button();
+                    }
                 }
 
                 ui.add_space(spacing);
@@ -743,14 +860,17 @@ impl eframe::App for GitScrollApp {
                     ui.separator();
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let total_files = self.file_list.len();
-                        let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
-                        let avg_tokens = if total_files > 0 { total_tokens / total_files } else { 0 };
+                        let text_files = self.file_list.iter().filter(|f| !f.is_binary).count();
+                        let binary_files = self.file_list.iter().filter(|f| f.is_binary).count();
+                        let total_tokens = self.file_list.iter().filter(|f| !f.is_binary).map(|f| f.tokens).sum::<usize>();
+                        let avg_tokens = if text_files > 0 { total_tokens / text_files } else { 0 };
                         
-                        ui.label(format!("Avg: {} tokens", avg_tokens));
+                        ui.label(format!("Avg: {} tokens/file", avg_tokens));
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new(format!("Total Tokens: {}", total_tokens)).strong());
+                        ui.label(egui::RichText::new(format!("Tokens: {}", total_tokens)).strong());
                         ui.add_space(8.0);
-                        ui.label(egui::RichText::new(format!("Files: {}", total_files)).strong());
+                        ui.label(egui::RichText::new(format!("Files: {} ({} text, {} bin)",
+                            total_files, text_files, binary_files)).strong());
                     });
                 }
             });
@@ -963,8 +1083,9 @@ impl eframe::App for GitScrollApp {
                 
                 ui.add_space(8.0);
                 
-                // Calculate max tokens for color scaling
+                // Calculate max tokens for color scaling (text files only)
                 let max_tokens = self.file_list.iter()
+                    .filter(|f| !f.is_binary)
                     .map(|f| f.tokens)
                     .max()
                     .unwrap_or(1);
@@ -1007,7 +1128,7 @@ impl eframe::App for GitScrollApp {
                                 let headers = [
                                     ("Number", SortColumn::Index, self.column_widths[0]),
                                     ("File Name", SortColumn::Name, self.column_widths[1]),
-                                    ("Token Count", SortColumn::Tokens, self.column_widths[2]),
+                                    ("Tokens/Size", SortColumn::Tokens, self.column_widths[2]),
                                 ];
                                 
                                 for (i, (text, col, width)) in headers.iter().enumerate() {
@@ -1281,22 +1402,39 @@ impl eframe::App for GitScrollApp {
                                     
                                     // Token count column (right-aligned with background color)
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        // Create a colored background based on token count
-                                        let token_color = crate::ui::style::token_count_color(
-                                            self.file_list[absolute_idx].tokens,
-                                            max_tokens,
-                                            self.ui_handler.is_dark_mode()
-                                        );
+                                        // Create a colored background based on token count or binary status
+                                        let token_color = if self.file_list[absolute_idx].is_binary {
+                                            // Use a distinct color for binary files
+                                            if self.ui_handler.is_dark_mode() {
+                                                egui::Color32::from_rgb(80, 80, 120) // Dark blue for binary files in dark mode
+                                            } else {
+                                                egui::Color32::from_rgb(200, 200, 240) // Light blue for binary files in light mode
+                                            }
+                                        } else {
+                                            // Use the regular token count color for text files
+                                            crate::ui::style::token_count_color(
+                                                self.file_list[absolute_idx].tokens,
+                                                max_tokens,
+                                                self.ui_handler.is_dark_mode()
+                                            )
+                                        };
                                         
                                         egui::Frame::default()
                                             .fill(token_color)
                                             .corner_radius(CornerRadius::same(4))
                                             .inner_margin(Margin::symmetric(6, 2))
                                             .show(ui, |ui| {
+                                                // Display token count or file size based on whether it's a binary file
+                                                let display_text = if self.file_list[absolute_idx].is_binary {
+                                                    format_file_size(self.file_list[absolute_idx].tokens)
+                                                } else {
+                                                    self.file_list[absolute_idx].tokens.to_string()
+                                                };
+                                                
                                                 ui.add_sized(
                                                     [self.column_widths[2], 20.0],
                                                     egui::Label::new(
-                                                        egui::RichText::new(self.file_list[absolute_idx].tokens.to_string())
+                                                        egui::RichText::new(display_text)
                                                             .strong()
                                                             .family(egui::FontFamily::Monospace)
                                                     )
@@ -1311,8 +1449,19 @@ impl eframe::App for GitScrollApp {
                             // Total row with custom styling
                             let page_files = end_idx - start_idx;
                             let total_files = self.file_list.len();
-                            let page_tokens = self.file_list[start_idx..end_idx].iter().map(|f| f.tokens).sum::<usize>();
-                            let total_tokens = self.file_list.iter().map(|f| f.tokens).sum::<usize>();
+                            
+                            // Count text files only for token totals
+                            let page_text_files = self.file_list[start_idx..end_idx].iter().filter(|f| !f.is_binary).count();
+                            let page_binary_files = page_files - page_text_files;
+                            let page_tokens = self.file_list[start_idx..end_idx].iter()
+                                .filter(|f| !f.is_binary)
+                                .map(|f| f.tokens).sum::<usize>();
+                            
+                            let total_text_files = self.file_list.iter().filter(|f| !f.is_binary).count();
+                            let total_binary_files = total_files - total_text_files;
+                            let total_tokens = self.file_list.iter()
+                                .filter(|f| !f.is_binary)
+                                .map(|f| f.tokens).sum::<usize>();
                             
                             let total_frame = egui::Frame::default()
                                 .fill(header_color)
@@ -1323,24 +1472,35 @@ impl eframe::App for GitScrollApp {
                                     // Empty index cell
                                     ui.add_sized([self.column_widths[0], 20.0], egui::Label::new(""));
                                     
-                                    // Total label showing page and total counts
+                                    // Total label showing page and total counts with text/binary breakdown
                                     ui.add_sized(
                                         [self.column_widths[1], 20.0],
                                         egui::Label::new(
                                             egui::RichText::new(
-                                                format!("Page: {} files | Total: {} files",
-                                                    page_files, total_files)
+                                                format!("Page: {} files ({} text, {} bin) | Total: {} files ({} text, {} bin)",
+                                                    page_files, page_text_files, page_binary_files,
+                                                    total_files, total_text_files, total_binary_files)
                                             ).strong()
                                         )
                                     );
                                     
                                     // Total tokens (right-aligned) showing page and total
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        // Show token counts for text files and total size for binary files
+                                        let page_binary_size = self.file_list[start_idx..end_idx].iter()
+                                            .filter(|f| f.is_binary)
+                                            .map(|f| f.tokens).sum::<usize>();
+                                        let total_binary_size = self.file_list.iter()
+                                            .filter(|f| f.is_binary)
+                                            .map(|f| f.tokens).sum::<usize>();
+                                            
                                         ui.add_sized(
                                             [self.column_widths[2], 20.0],
                                             egui::Label::new(
                                                 egui::RichText::new(
-                                                    format!("{} / {}", page_tokens, total_tokens)
+                                                    format!("Text: {} / {} tokens | Bin: {} / {}",
+                                                        page_tokens, total_tokens,
+                                                        format_file_size(page_binary_size), format_file_size(total_binary_size))
                                                 ).strong()
                                                  .family(egui::FontFamily::Monospace)
                                             )
@@ -1466,6 +1626,7 @@ impl GitScrollApp {
         self.file_list.clear();
         self.status_message = String::from("Ready");
         self.is_cloning = false;
+        self.cancel_requested = false; // Reset cancel flag
         self.is_loading_tokens = false;
         self.current_page = 0; // Reset to first page
         self.ui_handler.set_loading(false);
@@ -1491,10 +1652,10 @@ impl GitScrollApp {
                 let extension_match = self.filter_extension.is_empty() ||
                     path.extension().map_or(false, |e| e.to_string_lossy().to_lowercase() == self.filter_extension.to_lowercase());
                 
-                // Find token count for this file
-                let tokens = self.file_list.iter()
+                // Find token count and binary status for this file
+                let (tokens, is_binary) = self.file_list.iter()
                     .find(|f| f.path == *path)
-                    .map_or(0, |f| f.tokens);
+                    .map_or((0, false), |f| (f.tokens, f.is_binary));
                 
                 // Check token range filters
                 let min_tokens_match = self.filter_token_min == 0 || tokens >= self.filter_token_min;
@@ -1507,6 +1668,7 @@ impl GitScrollApp {
                         path: path.clone(),
                         tokens,
                         selected: false,
+                        is_binary,
                     });
                 }
             }
@@ -1529,22 +1691,45 @@ impl GitScrollApp {
         }
         
         // Create CSV content
-        let mut csv = String::from("Index,Path,Tokens\n");
+        let mut csv = String::from("Index,Path,Value,FormattedValue,IsBinary,Type\n");
         
         for file in &self.file_list {
+            let file_type = if file.is_binary { "Binary" } else { "Text" };
+            let value_label = if file.is_binary { "Size" } else { "Tokens" };
+            let formatted_value = if file.is_binary {
+                format_file_size(file.tokens)
+            } else {
+                file.tokens.to_string()
+            };
+            
             csv.push_str(&format!(
-                "{},{},{}\n",
+                "{},{},{},\"{}\",{},{}\n",
                 file.index,
                 file.path.to_string_lossy().replace(',', "\\,"), // Escape commas in paths
-                file.tokens
+                file.tokens,
+                formatted_value,
+                file.is_binary,
+                file_type
             ));
         }
+        
+        // Calculate total sizes for the success message
+        let total_files = self.file_list.len();
+        let text_files = self.file_list.iter().filter(|f| !f.is_binary).count();
+        let binary_files = self.file_list.iter().filter(|f| f.is_binary).count();
+        let total_tokens = self.file_list.iter().filter(|f| !f.is_binary).map(|f| f.tokens).sum::<usize>();
+        let total_binary_size = self.file_list.iter().filter(|f| f.is_binary).map(|f| f.tokens).sum::<usize>();
         
         // Write to file
         match std::fs::write("file_list.csv", csv) {
             Ok(_) => {
-                // Update status message would go here if we had mutable access
-                println!("Exported to file_list.csv");
+                // Print success message with statistics
+                println!("Exported to file_list.csv:");
+                println!("  - Total files: {} ({} text, {} binary)", total_files, text_files, binary_files);
+                println!("  - Total tokens (text files): {}", total_tokens);
+                if binary_files > 0 {
+                    println!("  - Total binary size: {}", format_file_size(total_binary_size));
+                }
             },
             Err(e) => {
                 // Handle error
@@ -1582,8 +1767,9 @@ mod tests {
         fs::write(&temp_file, "hello world this is a test").unwrap();
         
         // Count tokens
-        let count = count_tokens(&temp_file);
+        let (count, is_binary) = count_tokens(&temp_file);
         assert_eq!(count, 5); // 5 words in the test string
+        assert_eq!(is_binary, false); // Text file, not binary
         
         // Clean up
         fs::remove_file(temp_file).unwrap();
@@ -1593,9 +1779,9 @@ mod tests {
     fn test_sorting() {
         // Create test file info entries
         let files = vec![
-            FileInfo { index: 0, path: PathBuf::from("a.txt"), tokens: 10, selected: false },
-            FileInfo { index: 1, path: PathBuf::from("b.txt"), tokens: 5, selected: false },
-            FileInfo { index: 2, path: PathBuf::from("c.txt"), tokens: 15, selected: false },
+            FileInfo { index: 0, path: PathBuf::from("a.txt"), tokens: 10, selected: false, is_binary: false },
+            FileInfo { index: 1, path: PathBuf::from("b.txt"), tokens: 5, selected: false, is_binary: false },
+            FileInfo { index: 2, path: PathBuf::from("c.txt"), tokens: 15, selected: false, is_binary: false },
         ];
         
         // Test sorting by tokens ascending
@@ -1672,10 +1858,45 @@ mod tests {
         };
         
         // Test token counting for empty file
-        let count = count_tokens(&temp_file);
+        let (count, is_binary) = count_tokens(&temp_file);
         assert_eq!(count, 0);
+        assert_eq!(is_binary, false); // Empty text file, not binary
         
         // Clean up
         fs::remove_file(temp_file).unwrap();
+    }
+    
+    #[test]
+    fn test_binary_file_detection() {
+        // Create a temporary binary file
+        let temp_file = std::env::temp_dir().join("test_binary.bin");
+        let binary_data = [0u8, 1u8, 2u8, 3u8, 4u8]; // Some binary data
+        fs::write(&temp_file, &binary_data).unwrap();
+        
+        // Test token counting for binary file
+        let (size, is_binary) = count_tokens(&temp_file);
+        assert_eq!(size, binary_data.len()); // Should return the file size in bytes
+        assert_eq!(is_binary, true); // Should be detected as binary
+        
+        // Clean up
+        fs::remove_file(temp_file).unwrap();
+    }
+    
+    #[test]
+    fn test_format_file_size() {
+        // Test bytes
+        assert_eq!(format_file_size(123), "123 bytes");
+        
+        // Test kilobytes
+        assert_eq!(format_file_size(1234), "1.21 KB (1234 bytes)");
+        
+        // Test megabytes
+        assert_eq!(format_file_size(1234567), "1.18 MB (1234567 bytes)");
+        
+        // Test gigabytes
+        assert_eq!(format_file_size(1234567890), "1.15 GB (1234567890 bytes)");
+        
+        // Test zero
+        assert_eq!(format_file_size(0), "0 bytes");
     }
 }
