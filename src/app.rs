@@ -837,14 +837,13 @@ impl eframe::App for GitScrollApp {
                                 if absolute_idx >= self.file_list.len() {
                                     break;
                                 }
-                                let file = &self.file_list[absolute_idx];
                                 let i = absolute_idx; // For compatibility with existing code
                                 ui.horizontal(|ui| {
                                     // Add checkbox for selection
-                                    let mut selected = file.selected;
+                                    let mut selected = self.file_list[absolute_idx].selected;
                                     if ui.checkbox(&mut selected, "").changed() {
-                                        // Clone the index to avoid borrowing issues
-                                        let file_index = file.index;
+                                        // Get the index directly to avoid borrowing issues
+                                        let file_index = self.file_list[absolute_idx].index;
                                         
                                         // Update the selection state after the UI closure
                                         ui.ctx().data_mut(|data| {
@@ -853,7 +852,7 @@ impl eframe::App for GitScrollApp {
                                         
                                         // Handle shift-click for multi-selection
                                         if ui.input(|i| i.modifiers.shift) && selected {
-                                            if let Some(last_selected) = self.file_list.iter().rposition(|f| f.selected && f.index != file.index) {
+                                            if let Some(last_selected) = self.file_list.iter().rposition(|f| f.selected && f.index != self.file_list[absolute_idx].index) {
                                                 let clicked_idx = i;
                                                 let range = if clicked_idx < last_selected {
                                                     clicked_idx..=last_selected
@@ -871,18 +870,18 @@ impl eframe::App for GitScrollApp {
                                     
                                     // Index column with dynamic width - right aligned
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                        ui.add_sized([self.column_widths[0], 20.0], egui::Label::new(file.index.to_string()));
+                                        ui.add_sized([self.column_widths[0], 20.0], egui::Label::new(self.file_list[absolute_idx].index.to_string()));
                                     });
                                     
                                     // File path column with tree structure and color coding
-                                    let path_str = file.path.to_string_lossy();
+                                    let path_str = self.file_list[absolute_idx].path.to_string_lossy();
                                     
                                     // Calculate the file's depth in the directory structure
                                     let path_components: Vec<&str> = path_str.split(['/', '\\']).collect();
                                     let depth = path_components.len().saturating_sub(1);
                                     
                                     // Get file extension for color coding
-                                    let extension = file.path.extension()
+                                    let extension = self.file_list[absolute_idx].path.extension()
                                         .and_then(|e| e.to_str())
                                         .unwrap_or("");
                                     
@@ -902,7 +901,7 @@ impl eframe::App for GitScrollApp {
                                     };
                                     
                                     // Get just the file name for display
-                                    let file_name = file.path.file_name()
+                                    let file_name = self.file_list[absolute_idx].path.file_name()
                                         .map(|n| n.to_string_lossy().to_string())
                                         .unwrap_or_default();
                                     
@@ -928,7 +927,7 @@ impl eframe::App for GitScrollApp {
                                     // Show full path on hover with extension info
                                     if path_label.hovered() {
                                         egui::show_tooltip(ui.ctx(), LayerId::background(), egui::Id::new("path_tooltip").with(i), |ui| {
-                                            let extension = file.path.extension()
+                                            let extension = self.file_list[absolute_idx].path.extension()
                                                 .map_or("".to_string(), |e| format!(" ({})", e.to_string_lossy()));
                                             ui.label(format!("{}{}", path_str, extension));
                                         });
@@ -949,14 +948,14 @@ impl eframe::App for GitScrollApp {
                                                     #[cfg(target_os = "windows")]
                                                     {
                                                         std::process::Command::new("cmd")
-                                                            .args(&["/c", "start", "", file.path.to_string_lossy().as_ref()])
+                                                            .args(&["/c", "start", "", self.file_list[absolute_idx].path.to_string_lossy().as_ref()])
                                                             .spawn()
                                                             .ok();
                                                     }
                                                     #[cfg(not(target_os = "windows"))]
                                                     {
                                                         std::process::Command::new("xdg-open")
-                                                            .arg(file.path.to_string_lossy().as_ref())
+                                                            .arg(self.file_list[absolute_idx].path.to_string_lossy().as_ref())
                                                             .spawn()
                                                             .ok();
                                                     }
@@ -968,7 +967,7 @@ impl eframe::App for GitScrollApp {
                                                 
                                                 let copy_response = ui.button("Copy Path");
                                                 if copy_response.clicked() {
-                                                    ui.output_mut(|o| o.copied_text = file.path.to_string_lossy().to_string());
+                                                    ui.output_mut(|o| o.copied_text = self.file_list[absolute_idx].path.to_string_lossy().to_string());
                                                     // Close the popup when clicked
                                                     ui.ctx().memory_mut(|mem| {
                                                         mem.close_popup();
@@ -992,7 +991,7 @@ impl eframe::App for GitScrollApp {
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                         // Create a colored background based on token count
                                         let token_color = crate::ui::style::token_count_color(
-                                            file.tokens,
+                                            self.file_list[absolute_idx].tokens,
                                             max_tokens,
                                             self.ui_handler.is_dark_mode()
                                         );
@@ -1005,7 +1004,7 @@ impl eframe::App for GitScrollApp {
                                                 ui.add_sized(
                                                     [self.column_widths[2], 20.0],
                                                     egui::Label::new(
-                                                        egui::RichText::new(file.tokens.to_string())
+                                                        egui::RichText::new(self.file_list[absolute_idx].tokens.to_string())
                                                             .strong()
                                                             .family(egui::FontFamily::Monospace)
                                                     )
